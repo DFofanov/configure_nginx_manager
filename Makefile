@@ -103,11 +103,33 @@ setup-dirs:
 # Установка зависимостей
 install-dependencies:
 	@echo "$(YELLOW)→ Установка зависимостей Python...$(NC)"
-	@if ! command -v pip3 >/dev/null 2>&1; then \
-		echo "$(RED)✗ pip3 не найден. Установите python3-pip$(NC)"; \
+	@if command -v pip3 >/dev/null 2>&1; then \
+		pip3 install -q requests cryptography 2>/dev/null || pip3 install requests cryptography; \
+	elif command -v pip >/dev/null 2>&1; then \
+		pip install -q requests cryptography 2>/dev/null || pip install requests cryptography; \
+	elif command -v python3 >/dev/null 2>&1; then \
+		if python3 -m pip --version >/dev/null 2>&1; then \
+			python3 -m pip install -q requests cryptography 2>/dev/null || python3 -m pip install requests cryptography; \
+		else \
+			echo "$(RED)✗ pip не установлен. Выполните:$(NC)"; \
+			echo "  $(CYAN)sudo apt-get update && sudo apt-get install -y python3-pip$(NC)"; \
+			echo "  или"; \
+			echo "  $(CYAN)curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3 get-pip.py$(NC)"; \
+			exit 1; \
+		fi; \
+	elif command -v python >/dev/null 2>&1; then \
+		if python -m pip --version >/dev/null 2>&1; then \
+			python -m pip install -q requests cryptography 2>/dev/null || python -m pip install requests cryptography; \
+		else \
+			echo "$(RED)✗ pip не установлен. Выполните:$(NC)"; \
+			echo "  $(CYAN)sudo apt-get update && sudo apt-get install -y python3-pip$(NC)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "$(RED)✗ Python не найден. Установите Python 3:$(NC)"; \
+		echo "  $(CYAN)sudo apt-get update && sudo apt-get install -y python3 python3-pip$(NC)"; \
 		exit 1; \
 	fi
-	@pip3 install -q requests cryptography 2>/dev/null || pip3 install requests cryptography
 	@echo "$(GREEN)✓ Зависимости установлены$(NC)"
 
 # Копирование скрипта
@@ -193,17 +215,20 @@ uninstall: check-root
 	@echo "$(RED)║  Удаление Let's Encrypt SSL Manager                           ║$(NC)"
 	@echo "$(RED)╚════════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
-	@read -p "Вы уверены? Это удалит все файлы и настройки [y/N]: " -n 1 -r; \
-	echo ""; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		$(MAKE) remove-service; \
-		$(MAKE) remove-cron; \
-		$(MAKE) remove-files; \
-		echo ""; \
-		echo "$(GREEN)✓ Удаление завершено$(NC)"; \
-	else \
-		echo "$(YELLOW)Удаление отменено$(NC)"; \
-	fi
+	@printf "Вы уверены? Это удалит все файлы и настройки [y/N]: "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]* ) \
+			$(MAKE) remove-service; \
+			$(MAKE) remove-cron; \
+			$(MAKE) remove-files; \
+			echo ""; \
+			echo "$(GREEN)✓ Удаление завершено$(NC)"; \
+			;; \
+		* ) \
+			echo "$(YELLOW)Удаление отменено$(NC)"; \
+			;; \
+	esac
 
 # Удаление systemd service
 remove-service:
@@ -229,23 +254,29 @@ remove-files:
 	@rm -rf $(INSTALL_DIR)
 	@echo "$(GREEN)✓ Директория $(INSTALL_DIR) удалена$(NC)"
 	@echo ""
-	@read -p "Удалить конфигурацию $(CONFIG_FILE)? [y/N]: " -n 1 -r; \
-	echo ""; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		rm -f $(CONFIG_FILE); \
-		echo "$(GREEN)✓ Конфигурация удалена$(NC)"; \
-	else \
-		echo "$(YELLOW)Конфигурация сохранена$(NC)"; \
-	fi
+	@printf "Удалить конфигурацию $(CONFIG_FILE)? [y/N]: "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]* ) \
+			rm -f $(CONFIG_FILE); \
+			echo "$(GREEN)✓ Конфигурация удалена$(NC)"; \
+			;; \
+		* ) \
+			echo "$(YELLOW)Конфигурация сохранена$(NC)"; \
+			;; \
+	esac
 	@echo ""
-	@read -p "Удалить логи? [y/N]: " -n 1 -r; \
-	echo ""; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		rm -f $(LOG_FILE) $(CRON_LOG); \
-		echo "$(GREEN)✓ Логи удалены$(NC)"; \
-	else \
-		echo "$(YELLOW)Логи сохранены$(NC)"; \
-	fi
+	@printf "Удалить логи? [y/N]: "; \
+	read REPLY; \
+	case "$$REPLY" in \
+		[Yy]* ) \
+			rm -f $(LOG_FILE) $(CRON_LOG); \
+			echo "$(GREEN)✓ Логи удалены$(NC)"; \
+			;; \
+		* ) \
+			echo "$(YELLOW)Логи сохранены$(NC)"; \
+			;; \
+	esac
 
 # ==============================================================================
 # Утилиты
@@ -301,12 +332,24 @@ check-config:
 	@echo ""
 	@if [ ! -f "$(CONFIG_FILE)" ]; then \
 		echo "$(RED)✗ Конфигурация не найдена: $(CONFIG_FILE)$(NC)"; \
+		echo "$(YELLOW)Совет: Скопируйте config.json.example в $(CONFIG_FILE)$(NC)"; \
+		echo "  $(CYAN)sudo cp config.json.example $(CONFIG_FILE)$(NC)"; \
+		echo "  $(CYAN)sudo chmod 644 $(CONFIG_FILE)$(NC)"; \
 		exit 1; \
 	fi
 	@echo "$(GREEN)✓ Конфигурация найдена$(NC)"
+	@if [ ! -r "$(CONFIG_FILE)" ]; then \
+		echo "$(RED)✗ Нет прав для чтения: $(CONFIG_FILE)$(NC)"; \
+		echo "$(YELLOW)Решение: Запустите команду с sudo:$(NC)"; \
+		echo "  $(CYAN)sudo make check-config$(NC)"; \
+		exit 1; \
+	fi
 	@echo ""
-	@$(PYTHON) -c "import json; print(json.dumps(json.load(open('$(CONFIG_FILE)')), indent=2, ensure_ascii=False))" 2>/dev/null || \
-		(echo "$(RED)✗ Ошибка: Неверный формат JSON$(NC)"; exit 1)
+	@$(PYTHON) -c "import json; print(json.dumps(json.load(open('$(CONFIG_FILE)')), indent=2, ensure_ascii=False))" 2>&1 || \
+		(echo "$(RED)✗ Ошибка: Неверный формат JSON$(NC)"; \
+		 echo "$(YELLOW)Подробности:$(NC)"; \
+		 $(PYTHON) -c "import json; json.load(open('$(CONFIG_FILE)'))" 2>&1 | head -5; \
+		 exit 1)
 	@echo ""
 	@echo "$(YELLOW)→ Проверка обязательных параметров:$(NC)"
 	@$(PYTHON) -c "import json; c=json.load(open('$(CONFIG_FILE)')); assert c.get('regru_username'), 'regru_username не задан'" && echo "  $(GREEN)✓ regru_username$(NC)" || echo "  $(RED)✗ regru_username$(NC)"

@@ -115,7 +115,7 @@ def setup_logging(log_file: str, verbose: bool = False) -> logging.Logger:
     # Настройка форматирования
     formatter = logging.Formatter(
         '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        datefmt='%d.%m.%Y %H:%M:%S'
     )
     
     # Создаем logger
@@ -406,6 +406,10 @@ class NginxProxyManagerAPI:
         """
         Загрузка нового сертификата в NPM
         
+        ВАЖНО: NPM автоматически извлекает информацию из сертификата.
+        Мы загружаем сертификат через веб-интерфейс формы (multipart/form-data),
+        а не через JSON API, так как JSON endpoint имеет строгую валидацию схемы.
+        
         Args:
             domain: Основной домен
             cert_path: Путь к файлу сертификата
@@ -425,29 +429,36 @@ class NginxProxyManagerAPI:
             with open(key_path, 'r') as f:
                 certificate_key = f.read()
             
-            # Если есть цепочка, объединяем с сертификатом
+            # Используем промежуточный сертификат если доступен
+            intermediate_certificate = ""
             if chain_path and os.path.exists(chain_path):
                 with open(chain_path, 'r') as f:
-                    chain = f.read()
-                # NPM ожидает fullchain (cert + chain)
-                certificate = certificate + "\n" + chain
+                    intermediate_certificate = f.read()
             
-            # Формируем payload для API
-            payload = {
-                "provider": "other",
-                "nice_name": f"{domain} - Let's Encrypt",
-                "domain_names": [domain],
-                "certificate": certificate,
-                "certificate_key": certificate_key,
-                "meta": {
-                    "letsencrypt_agree": True,
-                    "dns_challenge": True,
-                    "dns_provider": "reg_ru"
-                }
+            # NPM Web UI использует multipart/form-data для загрузки custom сертификатов
+            # Эмулируем загрузку через веб-форму
+            files = {
+                'certificate': ('cert.pem', certificate, 'application/x-pem-file'),
+                'certificate_key': ('privkey.pem', certificate_key, 'application/x-pem-file'),
             }
             
+            # Добавляем промежуточный сертификат если есть
+            if intermediate_certificate:
+                files['intermediate_certificate'] = ('chain.pem', intermediate_certificate, 'application/x-pem-file')
+            
+            # Дополнительные поля формы
+            data = {
+                'nice_name': domain,
+                'provider': 'other',  # Обязательное поле: 'letsencrypt' или 'other'
+            }
+            
+            self.logger.debug(f"Uploading certificate as multipart/form-data")
+            self.logger.debug(f"Files: {list(files.keys())}")
+            self.logger.debug(f"Data: {data}")
             self.logger.info(f"Загрузка сертификата для {domain} в NPM...")
-            response = self.session.post(url, json=payload, timeout=30)
+            
+            # Отправляем как multipart/form-data
+            response = self.session.post(url, files=files, data=data, timeout=30)
             response.raise_for_status()
             
             result = response.json()
@@ -493,20 +504,29 @@ class NginxProxyManagerAPI:
             with open(key_path, 'r') as f:
                 certificate_key = f.read()
             
-            # Если есть цепочка, объединяем с сертификатом
+            # Используем промежуточный сертификат если доступен
+            intermediate_certificate = ""
             if chain_path and os.path.exists(chain_path):
                 with open(chain_path, 'r') as f:
-                    chain = f.read()
-                certificate = certificate + "\n" + chain
+                    intermediate_certificate = f.read()
             
-            # Формируем payload для обновления
-            payload = {
-                "certificate": certificate,
-                "certificate_key": certificate_key
+            # NPM Web UI использует multipart/form-data для обновления
+            files = {
+                'certificate': ('cert.pem', certificate, 'application/x-pem-file'),
+                'certificate_key': ('privkey.pem', certificate_key, 'application/x-pem-file'),
+            }
+            
+            # Добавляем промежуточный сертификат если есть
+            if intermediate_certificate:
+                files['intermediate_certificate'] = ('chain.pem', intermediate_certificate, 'application/x-pem-file')
+            
+            # Дополнительные поля формы
+            data = {
+                'provider': 'other',  # Обязательное поле
             }
             
             self.logger.info(f"Обновление сертификата ID {cert_id} в NPM...")
-            response = self.session.put(url, json=payload, timeout=30)
+            response = self.session.put(url, files=files, data=data, timeout=30)
             response.raise_for_status()
             
             self.logger.info("Сертификат успешно обновлен в NPM")
@@ -813,7 +833,7 @@ class LetsEncryptManager:
             expiry_date = cert.not_valid_after
             days_left = (expiry_date - datetime.now()).days
             
-            self.logger.info(f"Сертификат истекает: {expiry_date.strftime('%Y-%m-%d')}")
+            self.logger.info(f"Сертификат истекает: {expiry_date.strftime('%d.%m.%Y %H:%M:%S')}")
             self.logger.info(f"Осталось дней: {days_left}")
             
             return days_left
