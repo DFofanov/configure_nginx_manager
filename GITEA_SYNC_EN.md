@@ -57,12 +57,33 @@ chown git:git /var/log/gitea
 ### SSH Key Setup (for git@github.com)
 
 **On Gitea server:**
+
+**Step 1: Identify Gitea user**
 ```bash
-# Switch to git user
+# Check which user runs Gitea
+ps aux | grep gitea | grep -v grep
+
+# Usually one of:
+# - git (standard installation)
+# - gitea (Docker/LXC installation)
+```
+
+**Step 2: Switch to that user**
+```bash
+# Try git:
 sudo su - git
 
-# Create SSH key
-ssh-keygen -t ed25519 -C "gitea-to-github-sync"
+# If that doesn't work, try gitea:
+sudo su - gitea
+
+# Verify current user
+whoami  # Should be: git or gitea
+```
+
+**Step 3: Create SSH key**
+```bash
+# Create SSH key (if not exists)
+ssh-keygen -t ed25519 -C "gitea-to-github-sync" -f ~/.ssh/id_ed25519 -N ""
 
 # Copy public key
 cat ~/.ssh/id_ed25519.pub
@@ -74,7 +95,16 @@ cat ~/.ssh/id_ed25519.pub
 3. Paste public key
 4. Save
 
-**Verification:**
+**⚠️ IMPORTANT: Add GitHub to known_hosts:**
+```bash
+# From the same user (git or gitea)
+ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+# Verify key was added
+cat ~/.ssh/known_hosts | grep github.com
+```
+
+**Verify connection:**
 ```bash
 ssh -T git@github.com
 # Should output: Hi username! You've successfully authenticated...
