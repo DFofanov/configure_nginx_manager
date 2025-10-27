@@ -8,5 +8,10 @@
     "log_file": "/var/log/letsencrypt_regru.log",
     "dns_propagation_wait": 60,
     "dns_check_attempts": 10,
-    "dns_check_interval": 10
+    "dns_check_interval": 10,
+    "renewal_days": 30,
+    "npm_enabled": true,
+    "npm_host": "http://192.168.10.14:81",
+    "npm_email": "admin@example.com",
+    "npm_password": "changeme"
 }

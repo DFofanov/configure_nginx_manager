@@ -83,7 +83,7 @@ function Write-Log {
         [string]$Level = "INFO"
     )
     
-    $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $Timestamp = Get-Date -Format "dd.MM.yyyy HH:mm:ss"
     $LogMessage = "[$Timestamp] [$Level] $Message"
     
     # Вывод в консоль

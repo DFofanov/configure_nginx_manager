@@ -40,6 +40,17 @@ except ImportError:
     print("Выполните: pip install requests")
     sys.exit(1)
 
+try:
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID, ExtensionOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.backends import default_backend
+except ImportError:
+    print("ОШИБКА: Необходимо установить модуль 'cryptography'")
+    print("Выполните: pip install cryptography")
+    sys.exit(1)
+
 # ==============================================================================
 # КОНФИГУРАЦИЯ
 # ==============================================================================
@@ -65,6 +76,15 @@ DEFAULT_CONFIG = {
     "dns_propagation_wait": 60,  # Время ожидания распространения DNS (секунды)
     "dns_check_attempts": 10,     # Количество попыток проверки DNS
     "dns_check_interval": 10,     # Интервал между проверками DNS (секунды)
+    
+    # Параметры обновления сертификата
+    "renewal_days": 30,           # За сколько дней до истечения обновлять (по умолчанию 30)
+    
+    # Настройки Nginx Proxy Manager
+    "npm_enabled": False,         # Включить интеграцию с NPM
+    "npm_host": "http://192.168.10.14:81",  # Адрес NPM
+    "npm_email": "admin@example.com",       # Email для входа в NPM
+    "npm_password": "changeme",             # Пароль NPM
 }
 
 # API endpoints для reg.ru
@@ -275,6 +295,454 @@ class RegRuAPI:
             return True
         except Exception as e:
             self.logger.error(f"Не удалось удалить TXT запись: {e}")
+            return False
+
+
+# ==============================================================================
+# КЛАСС ДЛЯ РАБОТЫ С NGINX PROXY MANAGER
+# ==============================================================================
+
+class NginxProxyManagerAPI:
+    """Класс для работы с API Nginx Proxy Manager"""
+    
+    def __init__(self, host: str, email: str, password: str, logger: logging.Logger):
+        """
+        Инициализация API клиента NPM
+        
+        Args:
+            host: URL адрес NPM (например, http://192.168.10.14:81)
+            email: Email для входа
+            password: Пароль
+            logger: Logger объект
+        """
+        self.host = host.rstrip('/')
+        self.email = email
+        self.password = password
+        self.logger = logger
+        self.session = requests.Session()
+        self.token = None
+    
+    def login(self) -> bool:
+        """
+        Авторизация в Nginx Proxy Manager
+        
+        Returns:
+            True если успешно
+        """
+        url = f"{self.host}/api/tokens"
+        
+        payload = {
+            "identity": self.email,
+            "secret": self.password
+        }
+        
+        try:
+            self.logger.info("Авторизация в Nginx Proxy Manager...")
+            response = self.session.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            self.token = data.get("token")
+            
+            if self.token:
+                # Устанавливаем токен в заголовки для последующих запросов
+                self.session.headers.update({
+                    "Authorization": f"Bearer {self.token}"
+                })
+                self.logger.info("Авторизация в NPM успешна")
+                return True
+            else:
+                self.logger.error("Токен не получен при авторизации")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Ошибка при авторизации в NPM: {e}")
+            return False
+    
+    def get_certificates(self) -> List[Dict]:
+        """
+        Получение списка сертификатов
+        
+        Returns:
+            Список сертификатов
+        """
+        url = f"{self.host}/api/nginx/certificates"
+        
+        try:
+            self.logger.debug("Получение списка сертификатов из NPM...")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            
+            certificates = response.json()
+            self.logger.debug(f"Получено {len(certificates)} сертификатов")
+            return certificates
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Ошибка при получении списка сертификатов: {e}")
+            return []
+    
+    def find_certificate_by_domain(self, domain: str) -> Optional[Dict]:
+        """
+        Поиск сертификата по домену
+        
+        Args:
+            domain: Доменное имя
+            
+        Returns:
+            Данные сертификата или None
+        """
+        certificates = self.get_certificates()
+        
+        for cert in certificates:
+            domains = cert.get("domain_names", [])
+            if domain in domains or f"*.{domain}" in domains:
+                self.logger.debug(f"Найден существующий сертификат для {domain}")
+                return cert
+        
+        return None
+    
+    def upload_certificate(self, domain: str, cert_path: str, key_path: str, 
+                          chain_path: Optional[str] = None) -> Optional[Dict]:
+        """
+        Загрузка нового сертификата в NPM
+        
+        Args:
+            domain: Основной домен
+            cert_path: Путь к файлу сертификата
+            key_path: Путь к приватному ключу
+            chain_path: Путь к цепочке сертификатов (опционально)
+            
+        Returns:
+            Данные созданного сертификата или None
+        """
+        url = f"{self.host}/api/nginx/certificates"
+        
+        try:
+            # Читаем файлы сертификатов
+            with open(cert_path, 'r') as f:
+                certificate = f.read()
+            
+            with open(key_path, 'r') as f:
+                certificate_key = f.read()
+            
+            # Если есть цепочка, объединяем с сертификатом
+            if chain_path and os.path.exists(chain_path):
+                with open(chain_path, 'r') as f:
+                    chain = f.read()
+                # NPM ожидает fullchain (cert + chain)
+                certificate = certificate + "\n" + chain
+            
+            # Формируем payload для API
+            payload = {
+                "provider": "other",
+                "nice_name": f"{domain} - Let's Encrypt",
+                "domain_names": [domain],
+                "certificate": certificate,
+                "certificate_key": certificate_key,
+                "meta": {
+                    "letsencrypt_agree": True,
+                    "dns_challenge": True,
+                    "dns_provider": "reg_ru"
+                }
+            }
+            
+            self.logger.info(f"Загрузка сертификата для {domain} в NPM...")
+            response = self.session.post(url, json=payload, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            cert_id = result.get("id")
+            
+            if cert_id:
+                self.logger.info(f"Сертификат успешно загружен в NPM (ID: {cert_id})")
+                return result
+            else:
+                self.logger.error("Не удалось получить ID созданного сертификата")
+                return None
+                
+        except FileNotFoundError as e:
+            self.logger.error(f"Файл сертификата не найден: {e}")
+            return None
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Ошибка при загрузке сертификата в NPM: {e}")
+            if hasattr(e.response, 'text'):
+                self.logger.error(f"Ответ сервера: {e.response.text}")
+            return None
+    
+    def update_certificate(self, cert_id: int, cert_path: str, key_path: str,
+                          chain_path: Optional[str] = None) -> bool:
+        """
+        Обновление существующего сертификата
+        
+        Args:
+            cert_id: ID сертификата в NPM
+            cert_path: Путь к файлу сертификата
+            key_path: Путь к приватному ключу
+            chain_path: Путь к цепочке сертификатов (опционально)
+            
+        Returns:
+            True если успешно
+        """
+        url = f"{self.host}/api/nginx/certificates/{cert_id}"
+        
+        try:
+            # Читаем файлы сертификатов
+            with open(cert_path, 'r') as f:
+                certificate = f.read()
+            
+            with open(key_path, 'r') as f:
+                certificate_key = f.read()
+            
+            # Если есть цепочка, объединяем с сертификатом
+            if chain_path and os.path.exists(chain_path):
+                with open(chain_path, 'r') as f:
+                    chain = f.read()
+                certificate = certificate + "\n" + chain
+            
+            # Формируем payload для обновления
+            payload = {
+                "certificate": certificate,
+                "certificate_key": certificate_key
+            }
+            
+            self.logger.info(f"Обновление сертификата ID {cert_id} в NPM...")
+            response = self.session.put(url, json=payload, timeout=30)
+            response.raise_for_status()
+            
+            self.logger.info("Сертификат успешно обновлен в NPM")
+            return True
+            
+        except FileNotFoundError as e:
+            self.logger.error(f"Файл сертификата не найден: {e}")
+            return False
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Ошибка при обновлении сертификата в NPM: {e}")
+            if hasattr(e.response, 'text'):
+                self.logger.error(f"Ответ сервера: {e.response.text}")
+            return False
+    
+    def sync_certificate(self, domain: str, cert_dir: str) -> bool:
+        """
+        Синхронизация сертификата с NPM (создание или обновление)
+        
+        Args:
+            domain: Доменное имя
+            cert_dir: Директория с сертификатами Let's Encrypt
+            
+        Returns:
+            True если успешно
+        """
+        # Пути к файлам сертификата
+        cert_path = os.path.join(cert_dir, "cert.pem")
+        key_path = os.path.join(cert_dir, "privkey.pem")
+        chain_path = os.path.join(cert_dir, "chain.pem")
+        fullchain_path = os.path.join(cert_dir, "fullchain.pem")
+        
+        # Проверяем наличие файлов
+        if not os.path.exists(cert_path) or not os.path.exists(key_path):
+            self.logger.error(f"Файлы сертификата не найдены в {cert_dir}")
+            return False
+        
+        # Авторизуемся в NPM
+        if not self.login():
+            return False
+        
+        # Проверяем, существует ли уже сертификат для этого домена
+        existing_cert = self.find_certificate_by_domain(domain)
+        
+        # Используем fullchain если доступен, иначе cert + chain
+        if os.path.exists(fullchain_path):
+            final_cert_path = fullchain_path
+            final_chain_path = None
+        else:
+            final_cert_path = cert_path
+            final_chain_path = chain_path if os.path.exists(chain_path) else None
+        
+        if existing_cert:
+            # Обновляем существующий сертификат
+            cert_id = existing_cert.get("id")
+            self.logger.info(f"Обновление существующего сертификата (ID: {cert_id})")
+            return self.update_certificate(cert_id, final_cert_path, key_path, final_chain_path)
+        else:
+            # Создаем новый сертификат
+            self.logger.info("Создание нового сертификата в NPM")
+            result = self.upload_certificate(domain, final_cert_path, key_path, final_chain_path)
+            return result is not None
+
+
+# ==============================================================================
+# КЛАСС ДЛЯ ГЕНЕРАЦИИ ТЕСТОВЫХ СЕРТИФИКАТОВ
+# ==============================================================================
+
+class TestCertificateGenerator:
+    """Класс для генерации самоподписанных тестовых SSL сертификатов"""
+    
+    def __init__(self, logger: logging.Logger):
+        """
+        Инициализация генератора тестовых сертификатов
+        
+        Args:
+            logger: Logger объект
+        """
+        self.logger = logger
+    
+    def generate_self_signed_certificate(
+        self,
+        domain: str,
+        wildcard: bool = False,
+        output_dir: str = "/etc/letsencrypt/live",
+        validity_days: int = 90
+    ) -> bool:
+        """
+        Генерация самоподписанного SSL сертификата для тестирования
+        
+        Args:
+            domain: Основной домен
+            wildcard: Создать wildcard сертификат
+            output_dir: Директория для сохранения сертификата
+            validity_days: Срок действия сертификата в днях (по умолчанию 90)
+            
+        Returns:
+            True если сертификат создан успешно, False в противном случае
+        """
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("ГЕНЕРАЦИЯ ТЕСТОВОГО САМОПОДПИСАННОГО СЕРТИФИКАТА")
+            self.logger.info("=" * 80)
+            self.logger.info(f"Домен: {domain}")
+            self.logger.info(f"Wildcard: {wildcard}")
+            self.logger.info(f"Срок действия: {validity_days} дней")
+            self.logger.info("⚠️  ВНИМАНИЕ: Это тестовый сертификат, не для production!")
+            
+            # Создаем директорию для сертификата
+            cert_dir = os.path.join(output_dir, domain)
+            os.makedirs(cert_dir, exist_ok=True)
+            self.logger.info(f"Директория: {cert_dir}")
+            
+            # Генерируем приватный ключ
+            self.logger.info("Генерация приватного ключа RSA 2048 бит...")
+            private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=2048,
+                backend=default_backend()
+            )
+            
+            # Сохраняем приватный ключ
+            key_path = os.path.join(cert_dir, "privkey.pem")
+            with open(key_path, "wb") as f:
+                f.write(private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption()
+                ))
+            os.chmod(key_path, 0o600)
+            self.logger.info(f"✓ Приватный ключ сохранен: {key_path}")
+            
+            # Подготовка данных для сертификата
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COUNTRY_NAME, "RU"),
+                x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Moscow"),
+                x509.NameAttribute(NameOID.LOCALITY_NAME, "Moscow"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Test Certificate"),
+                x509.NameAttribute(NameOID.COMMON_NAME, domain),
+            ])
+            
+            # Создаем список альтернативных имен (SAN)
+            san_list = [x509.DNSName(domain)]
+            if wildcard:
+                san_list.append(x509.DNSName(f"*.{domain}"))
+            
+            # Генерируем сертификат
+            self.logger.info("Генерация самоподписанного сертификата...")
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.utcnow())
+                .not_valid_after(datetime.utcnow() + timedelta(days=validity_days))
+                .add_extension(
+                    x509.SubjectAlternativeName(san_list),
+                    critical=False,
+                )
+                .add_extension(
+                    x509.BasicConstraints(ca=False, path_length=None),
+                    critical=True,
+                )
+                .add_extension(
+                    x509.KeyUsage(
+                        digital_signature=True,
+                        key_encipherment=True,
+                        content_commitment=False,
+                        data_encipherment=False,
+                        key_agreement=False,
+                        key_cert_sign=False,
+                        crl_sign=False,
+                        encipher_only=False,
+                        decipher_only=False,
+                    ),
+                    critical=True,
+                )
+                .add_extension(
+                    x509.ExtendedKeyUsage([
+                        x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
+                        x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+                    ]),
+                    critical=False,
+                )
+                .sign(private_key, hashes.SHA256(), default_backend())
+            )
+            
+            # Сохраняем сертификат
+            cert_path = os.path.join(cert_dir, "cert.pem")
+            with open(cert_path, "wb") as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+            self.logger.info(f"✓ Сертификат сохранен: {cert_path}")
+            
+            # Создаем fullchain (для самоподписанного это просто копия cert)
+            fullchain_path = os.path.join(cert_dir, "fullchain.pem")
+            with open(fullchain_path, "wb") as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+            self.logger.info(f"✓ Fullchain сохранен: {fullchain_path}")
+            
+            # Создаем chain.pem (пустой для самоподписанного)
+            chain_path = os.path.join(cert_dir, "chain.pem")
+            with open(chain_path, "w") as f:
+                f.write("")
+            self.logger.info(f"✓ Chain файл создан: {chain_path}")
+            
+            # Выводим информацию о сертификате
+            self.logger.info("")
+            self.logger.info("=" * 80)
+            self.logger.info("ИНФОРМАЦИЯ О СЕРТИФИКАТЕ")
+            self.logger.info("=" * 80)
+            self.logger.info(f"Домен: {domain}")
+            if wildcard:
+                self.logger.info(f"Wildcard: *.{domain}")
+            self.logger.info(f"Действителен с: {cert.not_valid_before}")
+            self.logger.info(f"Действителен до: {cert.not_valid_after}")
+            self.logger.info(f"Серийный номер: {cert.serial_number}")
+            self.logger.info("")
+            self.logger.info("📁 Файлы сертификата:")
+            self.logger.info(f"  • Приватный ключ: {key_path}")
+            self.logger.info(f"  • Сертификат: {cert_path}")
+            self.logger.info(f"  • Fullchain: {fullchain_path}")
+            self.logger.info(f"  • Chain: {chain_path}")
+            self.logger.info("")
+            self.logger.info("⚠️  ВНИМАНИЕ:")
+            self.logger.info("  Это самоподписанный тестовый сертификат!")
+            self.logger.info("  Браузеры будут показывать предупреждение о безопасности.")
+            self.logger.info("  Используйте ТОЛЬКО для тестирования и разработки!")
+            self.logger.info("  Для production используйте настоящие Let's Encrypt сертификаты.")
+            self.logger.info("=" * 80)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка при генерации тестового сертификата: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False
 
 
@@ -570,6 +1038,26 @@ class LetsEncryptManager:
             
         except Exception as e:
             self.logger.error(f"Ошибка при чтении сертификата: {e}")
+    
+    def sync_with_npm(self, npm_api: NginxProxyManagerAPI) -> bool:
+        """
+        Синхронизация сертификата с Nginx Proxy Manager
+        
+        Args:
+            npm_api: API клиент NPM
+            
+        Returns:
+            True если успешно
+        """
+        self.logger.info("=== Синхронизация сертификата с Nginx Proxy Manager ===")
+        
+        # Проверяем наличие сертификата
+        if not os.path.exists(self.cert_dir):
+            self.logger.error(f"Директория сертификата не найдена: {self.cert_dir}")
+            return False
+        
+        # Синхронизируем сертификат
+        return npm_api.sync_certificate(self.domain, self.cert_dir)
 
 
 # ==============================================================================
@@ -701,6 +1189,16 @@ def main():
         help="Подробный вывод",
         action="store_true"
     )
+    parser.add_argument(
+        "--auto",
+        help="Автоматический режим: проверка и обновление при необходимости",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--test-cert",
+        help="Создать самоподписанный тестовый сертификат (для разработки и тестирования)",
+        action="store_true"
+    )
     
     args = parser.parse_args()
     
@@ -714,6 +1212,70 @@ def main():
     
     # Настройка логирования
     logger = setup_logging(config["log_file"], args.verbose)
+    
+    # Генерация тестового сертификата
+    if args.test_cert:
+        logger.info("=" * 80)
+        logger.info("РЕЖИМ: Генерация тестового самоподписанного сертификата")
+        logger.info("=" * 80)
+        
+        test_gen = TestCertificateGenerator(logger)
+        success = test_gen.generate_self_signed_certificate(
+            domain=config["domain"],
+            wildcard=config.get("wildcard", False),
+            output_dir=config["cert_dir"],
+            validity_days=90
+        )
+        
+        if success:
+            # Опционально загружаем в NPM
+            if config.get("npm_enabled", False):
+                logger.info("")
+                logger.info("=" * 80)
+                logger.info("ЗАГРУЗКА ТЕСТОВОГО СЕРТИФИКАТА В NGINX PROXY MANAGER")
+                logger.info("=" * 80)
+                
+                npm_api = NginxProxyManagerAPI(
+                    config["npm_host"],
+                    config["npm_email"],
+                    config["npm_password"],
+                    logger
+                )
+                
+                if npm_api.login():
+                    cert_dir = os.path.join(config["cert_dir"], config["domain"])
+                    cert_path = os.path.join(cert_dir, "fullchain.pem")
+                    key_path = os.path.join(cert_dir, "privkey.pem")
+                    
+                    # Проверяем существующий сертификат
+                    existing = npm_api.find_certificate_by_domain(config["domain"])
+                    
+                    if existing:
+                        # Обновляем существующий
+                        cert_id = existing.get("id")
+                        logger.info(f"Обновление существующего сертификата в NPM (ID: {cert_id})")
+                        if npm_api.update_certificate(cert_id, cert_path, key_path):
+                            logger.info("✅ Тестовый сертификат успешно обновлен в NPM")
+                        else:
+                            logger.warning("⚠️  Не удалось обновить сертификат в NPM")
+                    else:
+                        # Создаем новый
+                        logger.info("Загрузка нового тестового сертификата в NPM")
+                        if npm_api.upload_certificate(config["domain"], cert_path, key_path):
+                            logger.info("✅ Тестовый сертификат успешно загружен в NPM")
+                        else:
+                            logger.warning("⚠️  Не удалось загрузить сертификат в NPM")
+                else:
+                    logger.error("Не удалось подключиться к Nginx Proxy Manager")
+            
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("✅ ТЕСТОВЫЙ СЕРТИФИКАТ УСПЕШНО СОЗДАН")
+            logger.info("=" * 80)
+            return 0
+        else:
+            logger.error("❌ Не удалось создать тестовый сертификат")
+            return 1
     
     # Обработка хуков для certbot
     if args.auth_hook:
@@ -781,6 +1343,20 @@ def main():
         if success:
             manager.display_certificate_info()
             reload_webserver(logger)
+            
+            # Синхронизация с Nginx Proxy Manager
+            if config.get("npm_enabled", False):
+                npm_api = NginxProxyManagerAPI(
+                    config["npm_host"],
+                    config["npm_email"],
+                    config["npm_password"],
+                    logger
+                )
+                if manager.sync_with_npm(npm_api):
+                    logger.info("Сертификат успешно добавлен в Nginx Proxy Manager")
+                else:
+                    logger.warning("Не удалось синхронизировать сертификат с NPM")
+            
             logger.info("Новый сертификат успешно создан")
             return 0
         else:
@@ -793,6 +1369,20 @@ def main():
         if success:
             manager.display_certificate_info()
             reload_webserver(logger)
+            
+            # Синхронизация с Nginx Proxy Manager
+            if config.get("npm_enabled", False):
+                npm_api = NginxProxyManagerAPI(
+                    config["npm_host"],
+                    config["npm_email"],
+                    config["npm_password"],
+                    logger
+                )
+                if manager.sync_with_npm(npm_api):
+                    logger.info("Сертификат успешно обновлен в Nginx Proxy Manager")
+                else:
+                    logger.warning("Не удалось синхронизировать сертификат с NPM")
+            
             logger.info("Сертификат успешно обновлен")
             return 0
         else:
@@ -801,26 +1391,89 @@ def main():
     
     else:
         # Автоматический режим: проверка и обновление при необходимости
+        logger.info("=" * 60)
+        logger.info("АВТОМАТИЧЕСКАЯ ПРОВЕРКА И ОБНОВЛЕНИЕ СЕРТИФИКАТА")
+        logger.info("=" * 60)
+        
+        # Получаем порог для обновления из конфигурации
+        renewal_days = config.get("renewal_days", 30)
+        logger.info(f"Порог обновления: {renewal_days} дней до истечения")
+        
+        # Проверяем срок действия сертификата
         days_left = manager.check_certificate_expiry()
         
         if days_left is None:
-            # Сертификат не существует
-            logger.info("Сертификат не найден. Создание нового...")
+            # Сертификат не существует - создаем новый
+            logger.info("=" * 60)
+            logger.info("СТАТУС: Сертификат не найден")
+            logger.info("ДЕЙСТВИЕ: Создание нового сертификата")
+            logger.info("=" * 60)
             success = manager.obtain_certificate()
-        elif days_left < 30:
-            # Сертификат скоро истекает
-            logger.info(f"Сертификат истекает через {days_left} дней. Обновление...")
+            action = "создан"
+        elif days_left < renewal_days:
+            # Сертификат скоро истекает - обновляем
+            logger.info("=" * 60)
+            logger.info(f"СТАТУС: Сертификат истекает через {days_left} дней")
+            logger.info(f"ДЕЙСТВИЕ: Обновление сертификата (порог: {renewal_days} дней)")
+            logger.info("=" * 60)
             success = manager.renew_certificate()
+            action = "обновлен"
         else:
-            # Сертификат действителен
-            logger.info(f"Сертификат действителен ({days_left} дней). Обновление не требуется.")
+            # Сертификат действителен - ничего не делаем
+            logger.info("=" * 60)
+            logger.info(f"СТАТУС: Сертификат действителен ({days_left} дней)")
+            logger.info("ДЕЙСТВИЕ: Обновление не требуется")
+            logger.info("=" * 60)
             manager.display_certificate_info()
+            
+            # Проверяем синхронизацию с NPM даже если сертификат действителен
+            if config.get("npm_enabled", False):
+                logger.info("Проверка синхронизации с Nginx Proxy Manager...")
+                npm_api = NginxProxyManagerAPI(
+                    config["npm_host"],
+                    config["npm_email"],
+                    config["npm_password"],
+                    logger
+                )
+                existing_cert = npm_api.login() and npm_api.find_certificate_by_domain(manager.domain)
+                if existing_cert:
+                    logger.info(f"Сертификат найден в NPM (ID: {existing_cert.get('id')})")
+                else:
+                    logger.info("Сертификат не найден в NPM. Синхронизация...")
+                    if manager.sync_with_npm(npm_api):
+                        logger.info("Сертификат успешно синхронизирован с NPM")
+            
             return 0
         
+        # Если был создан или обновлен сертификат
         if success:
+            logger.info("=" * 60)
+            logger.info(f"РЕЗУЛЬТАТ: Сертификат успешно {action}")
+            logger.info("=" * 60)
+            
             manager.display_certificate_info()
             reload_webserver(logger)
-            logger.info("Операция завершена успешно")
+            
+            # Синхронизация с Nginx Proxy Manager
+            if config.get("npm_enabled", False):
+                logger.info("=" * 60)
+                logger.info("СИНХРОНИЗАЦИЯ С NGINX PROXY MANAGER")
+                logger.info("=" * 60)
+                
+                npm_api = NginxProxyManagerAPI(
+                    config["npm_host"],
+                    config["npm_email"],
+                    config["npm_password"],
+                    logger
+                )
+                if manager.sync_with_npm(npm_api):
+                    logger.info(f"✅ Сертификат успешно {action} в Nginx Proxy Manager")
+                else:
+                    logger.warning("⚠️  Не удалось синхронизировать сертификат с NPM")
+            
+            logger.info("=" * 60)
+            logger.info("ОПЕРАЦИЯ ЗАВЕРШЕНА УСПЕШНО")
+            logger.info("=" * 60)
             return 0
         else:
             logger.error("Операция завершилась с ошибкой")
