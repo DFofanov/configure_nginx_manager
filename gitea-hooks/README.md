@@ -1,4 +1,4 @@
-# Git Hooks для Gitea v1
+# Git Hooks для Gitea
 
 Автоматическая синхронизация с GitHub после push в Gitea.
 
