@@ -160,8 +160,6 @@ credentials.txt
 *.secret
 config.json
 
-
-
 # Logs
 *.log
 logs/
