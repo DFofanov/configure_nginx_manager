@@ -1,0 +1,100 @@
+name: Sync from Gitea
+
+# Запускается вручную или по webhook от Gitea
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [gitea-push]
+  schedule:
+    # Проверка каждый час
+    - cron: '0 * * * *'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout GitHub repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name "Sync Bot"
+          git config --global user.email "bot@example.com"
+      
+      - name: Add Gitea remote
+        env:
+          GITEA_URL: ${{ secrets.GITEA_URL }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          if [ -z "$GITEA_URL" ]; then
+            echo "⚠️ GITEA_URL не настроен, пропускаем синхронизацию"
+            exit 0
+          fi
+          
+          # Добавляем Gitea remote с токеном
+          git remote add gitea "https://oauth2:${GITEA_TOKEN}@${GITEA_URL#https://}"
+          git remote -v
+      
+      - name: Fetch from Gitea
+        run: |
+          if git remote | grep -q gitea; then
+            echo "🔄 Получение изменений из Gitea..."
+            git fetch gitea --tags
+          else
+            echo "⚠️ Gitea remote не настроен"
+            exit 0
+          fi
+      
+      - name: Check for new commits
+        id: check
+        run: |
+          # Проверяем есть ли новые коммиты в Gitea
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse gitea/main 2>/dev/null || git rev-parse gitea/master 2>/dev/null || echo $LOCAL)
+          
+          if [ "$LOCAL" != "$REMOTE" ]; then
+            echo "new_commits=true" >> $GITHUB_OUTPUT
+            echo "✅ Обнаружены новые изменения в Gitea"
+          else
+            echo "new_commits=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ Нет новых изменений"
+          fi
+      
+      - name: Merge changes from Gitea
+        if: steps.check.outputs.new_commits == 'true'
+        run: |
+          # Определяем главную ветку
+          if git show-ref --verify --quiet refs/remotes/gitea/main; then
+            BRANCH="main"
+          else
+            BRANCH="master"
+          fi
+          
+          echo "🔀 Слияние изменений из gitea/${BRANCH}..."
+          git merge "gitea/${BRANCH}" --allow-unrelated-histories -m "Sync from Gitea: $(date)"
+      
+      - name: Push to GitHub
+        if: steps.check.outputs.new_commits == 'true'
+        run: |
+          echo "⬆️ Отправка изменений в GitHub..."
+          git push origin HEAD:main --force-with-lease
+          git push origin --tags
+          echo "✅ Синхронизация завершена"
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🔄 Отчет о синхронизации" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.new_commits }}" == "true" ]; then
+            echo "✅ **Статус**: Синхронизировано успешно" >> $GITHUB_STEP_SUMMARY
+            echo "📦 **Коммиты**: Новые изменения получены и объединены" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **Статус**: Нет новых изменений" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🕐 **Время**: $(date)" >> $GITHUB_STEP_SUMMARY
