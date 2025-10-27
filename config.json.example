@@ -1,0 +1,12 @@
+{
+    "regru_username": "your_username",
+    "regru_password": "your_password",
+    "domain": "dfv24.com",
+    "wildcard": true,
+    "email": "admin@dfv24.com",
+    "cert_dir": "/etc/letsencrypt/live",
+    "log_file": "/var/log/letsencrypt_regru.log",
+    "dns_propagation_wait": 60,
+    "dns_check_attempts": 10,
+    "dns_check_interval": 10
+}
