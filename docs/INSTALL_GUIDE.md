@@ -65,7 +65,7 @@ sudo ./letsencrypt_regru.sh
    - Пароль
 4. **Wildcard сертификат** - создавать ли `*.example.com` (рекомендуется: Да)
 5. **Интеграция с NPM** (опционально):
-   - Адрес NPM (например, `http://192.168.10.14:81`)
+   - Адрес NPM (например, `http://10.10.10.14:81`)
    - Email для входа в NPM
    - Пароль NPM
 
@@ -175,7 +175,7 @@ sudo systemctl restart letsencrypt-regru.timer
     "dns_check_interval": 10,
     "renewal_days": 30,
     "npm_enabled": true,
-    "npm_host": "http://192.168.10.14:81",
+    "npm_host": "http://10.10.10.14:81",
     "npm_email": "admin@npm.local",
     "npm_password": "secure_password"
 }

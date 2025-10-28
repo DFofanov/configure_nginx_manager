@@ -239,13 +239,13 @@ create_config() {
     read -p "Включить интеграцию с Nginx Proxy Manager? (y/N): " -n 1 -r
     echo ""
     npm_enabled="false"
-    npm_host="http://192.168.10.14:81"
+    npm_host="http://10.10.10.14:81"
     npm_email="admin@example.com"
     npm_password="changeme"
     
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         npm_enabled="true"
-        read -p "Введите адрес NPM (например, http://192.168.10.14:81): " npm_host
+        read -p "Введите адрес NPM (например, http://10.10.10.14:81): " npm_host
         read -p "Введите email для входа в NPM: " npm_email
         read -s -p "Введите пароль NPM: " npm_password
         echo ""

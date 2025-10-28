@@ -62,11 +62,11 @@ DEFAULT_CONFIG = {
     "regru_password": "your_password",
     
     # Параметры домена
-    "domain": "dfv24.com",
+    "domain": "example.com",
     "wildcard": True,  # Создавать wildcard сертификат (*.domain.com)
     
     # Email для уведомлений Let's Encrypt
-    "email": "admin@dfv24.com",
+    "email": "admin@example.com",
     
     # Директории
     "cert_dir": "/etc/letsencrypt/live",
@@ -82,7 +82,7 @@ DEFAULT_CONFIG = {
     
     # Настройки Nginx Proxy Manager
     "npm_enabled": False,         # Включить интеграцию с NPM
-    "npm_host": "http://192.168.10.14:81",  # Адрес NPM
+    "npm_host": "http://10.10.10.14:81",  # Адрес NPM
     "npm_email": "admin@example.com",       # Email для входа в NPM
     "npm_password": "changeme",             # Пароль NPM
 }
@@ -310,7 +310,7 @@ class NginxProxyManagerAPI:
         Инициализация API клиента NPM
         
         Args:
-            host: URL адрес NPM (например, http://192.168.10.14:81)
+            host: URL адрес NPM (например, http://10.10.10.14:81)
             email: Email для входа
             password: Пароль
             logger: Logger объект

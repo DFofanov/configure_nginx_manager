@@ -573,9 +573,9 @@ sudo nano /etc/letsencrypt/regru_config.json
 {
     "regru_username": "your_actual_username",
     "regru_password": "your_actual_password",
-    "domain": "dfv24.com",
+    "domain": "example.com",
     "wildcard": true,
-    "email": "admin@dfv24.com",
+    "email": "admin@example.com",
     "cert_dir": "/etc/letsencrypt/live",
     "log_file": "/var/log/letsencrypt_regru.log",
     "dns_propagation_wait": 60,
@@ -597,9 +597,9 @@ sudo nano letsencrypt_regru_dns.sh
 ```bash
 REGRU_USERNAME="your_actual_username"
 REGRU_PASSWORD="your_actual_password"
-DOMAIN="dfv24.com"
-WILDCARD_DOMAIN="*.dfv24.com"
-EMAIL="admin@dfv24.com"
+DOMAIN="example.com"
+WILDCARD_DOMAIN="*.example.com"
+EMAIL="admin@example.com"
 ```
 
 ### 3. Установка прав доступа
@@ -719,12 +719,12 @@ sudo nano /etc/letsencrypt/regru_config.json
 {
     "regru_username": "ваш_логин_regru",
     "regru_password": "ваш_пароль_regru",
-    "domain": "dfv24.com",
+    "domain": "example.com",
     "wildcard": true,
-    "email": "admin@dfv24.com",
+    "email": "admin@example.com",
     
     "npm_enabled": true,
-    "npm_host": "http://192.168.10.14:81",
+    "npm_host": "http://10.10.10.14:81",
     "npm_email": "admin@example.com",
     "npm_password": "changeme"
 }
@@ -740,7 +740,7 @@ sudo python3 letsencrypt_regru_api.py -c /etc/letsencrypt/regru_config.json --ob
 
 Откройте Nginx Proxy Manager → SSL Certificates
 
-Ваш сертификат `*.dfv24.com` готов к использованию! 🎉
+Ваш сертификат `*.example.com` готов к использованию! 🎉
 
 **Что произошло:**
 1. ✅ Создан wildcard сертификат через Let's Encrypt
@@ -770,13 +770,13 @@ sudo python3 letsencrypt_regru_api.py -c /etc/letsencrypt/regru_config.json --ob
 | Параметр | Описание | Пример |
 |----------|----------|--------|
 | `npm_enabled` | Включить интеграцию с NPM | `true` или `false` |
-| `npm_host` | URL адрес NPM | `http://192.168.10.14:81` |
+| `npm_host` | URL адрес NPM | `http://10.10.10.14:81` |
 | `npm_email` | Email для входа в NPM | `admin@example.com` |
 | `npm_password` | Пароль администратора NPM | `changeme` |
 
 #### 2. Получение учетных данных NPM
 
-1. Войдите в Nginx Proxy Manager: `http://192.168.10.14:81`
+1. Войдите в Nginx Proxy Manager: `http://10.10.10.14:81`
 2. Используйте email и пароль администратора
 3. По умолчанию:
    - Email: `admin@example.com`
@@ -838,7 +838,7 @@ from letsencrypt_regru_api import NginxProxyManagerAPI
 
 # Инициализация
 npm_api = NginxProxyManagerAPI(
-    host="http://192.168.10.14:81",
+    host="http://10.10.10.14:81",
     email="admin@example.com",
     password="changeme",
     logger=logger
@@ -851,10 +851,10 @@ npm_api.login()
 certificates = npm_api.get_certificates()
 
 # Поиск сертификата по домену
-cert = npm_api.find_certificate_by_domain("dfv24.com")
+cert = npm_api.find_certificate_by_domain("example.com")
 
 # Синхронизация сертификата
-npm_api.sync_certificate("dfv24.com", "/etc/letsencrypt/live/dfv24.com")
+npm_api.sync_certificate("example.com", "/etc/letsencrypt/live/example.com")
 ```
 
 #### API Endpoints
@@ -889,7 +889,7 @@ sudo python3 letsencrypt_regru_api.py -c config.json --obtain -v
 2025-10-27 10:30:16 - DEBUG - Получение списка сертификатов из NPM...
 2025-10-27 10:30:16 - DEBUG - Получено 3 сертификатов
 2025-10-27 10:30:16 - INFO - Создание нового сертификата в NPM
-2025-10-27 10:30:16 - INFO - Загрузка сертификата для dfv24.com в NPM...
+2025-10-27 10:30:16 - INFO - Загрузка сертификата для example.com в NPM...
 2025-10-27 10:30:17 - INFO - Сертификат успешно загружен в NPM (ID: 4)
 2025-10-27 10:30:17 - INFO - Сертификат успешно добавлен в Nginx Proxy Manager
 ```
@@ -906,7 +906,7 @@ sudo python3 letsencrypt_regru_api.py -c config.json --obtain -v
 **Решение:**
 ```bash
 # Проверьте доступность NPM
-curl http://192.168.10.14:81/api/
+curl http://10.10.10.14:81/api/
 
 # Проверьте учетные данные
 # Войдите в NPM через браузер с теми же учетными данными
@@ -922,17 +922,17 @@ curl http://192.168.10.14:81/api/
 **Решение:**
 ```bash
 # Проверьте наличие файлов сертификата
-ls -la /etc/letsencrypt/live/dfv24.com/
+ls -la /etc/letsencrypt/live/example.com/
 
 # Проверьте права доступа
-sudo chmod 644 /etc/letsencrypt/live/dfv24.com/*.pem
+sudo chmod 644 /etc/letsencrypt/live/example.com/*.pem
 
 # Попробуйте вручную
 sudo python3 -c "
 from letsencrypt_regru_api import NginxProxyManagerAPI
 import logging
 logger = logging.getLogger()
-npm = NginxProxyManagerAPI('http://192.168.10.14:81', 'admin@example.com', 'changeme', logger)
+npm = NginxProxyManagerAPI('http://10.10.10.14:81', 'admin@example.com', 'changeme', logger)
 npm.login()
 print(npm.get_certificates())
 "
@@ -978,7 +978,7 @@ sudo chown root:root /etc/letsencrypt/regru_config.json
 
 2. **Используйте HTTPS для NPM** (если доступно)
    ```json
-   "npm_host": "https://192.168.10.14:443"
+   "npm_host": "https://10.10.10.14:443"
    ```
 
 3. **Ограничьте доступ к API NPM**
@@ -995,7 +995,7 @@ sudo tail -n 50 /var/log/letsencrypt_regru.log | grep -i npm
 
 #### В веб-интерфейсе NPM
 
-1. Откройте NPM: `http://192.168.10.14:81`
+1. Откройте NPM: `http://10.10.10.14:81`
 2. Войдите в систему
 3. Перейдите в **SSL Certificates**
 4. Проверьте наличие сертификата для вашего домена
@@ -1005,13 +1005,13 @@ sudo tail -n 50 /var/log/letsencrypt_regru.log | grep -i npm
 
 ```bash
 # Список сертификатов в NPM через API
-curl -X POST http://192.168.10.14:81/api/tokens \
+curl -X POST http://10.10.10.14:81/api/tokens \
   -H "Content-Type: application/json" \
   -d '{"identity":"admin@example.com","secret":"changeme"}' \
   | jq -r '.token' > /tmp/npm_token
 
 curl -H "Authorization: Bearer $(cat /tmp/npm_token)" \
-  http://192.168.10.14:81/api/nginx/certificates \
+  http://10.10.10.14:81/api/nginx/certificates \
   | jq '.'
 ```
 
@@ -1214,10 +1214,10 @@ sudo systemctl status cron
 
 ```bash
 # В начале crontab добавьте
-MAILTO=admin@dfv24.com
+MAILTO=admin@example.com
 
 # Задача с уведомлениями
-0 3 * * * /usr/bin/python3 /path/to/letsencrypt_regru_api.py -c /etc/letsencrypt/regru_config.json 2>&1 | mail -s "SSL Certificate Check - $(date)" admin@dfv24.com
+0 3 * * * /usr/bin/python3 /path/to/letsencrypt_regru_api.py -c /etc/letsencrypt/regru_config.json 2>&1 | mail -s "SSL Certificate Check - $(date)" admin@example.com
 ```
 
 ---
@@ -1338,9 +1338,9 @@ curl -X POST "https://api.reg.ru/api/regru2/user/get_balance" \
 - Проверьте DNS записи вручную:
 
 ```bash
-nslookup -type=TXT _acme-challenge.dfv24.com
+nslookup -type=TXT _acme-challenge.example.com
 # или
-dig TXT _acme-challenge.dfv24.com
+dig TXT _acme-challenge.example.com
 ```
 
 ### Проблема: Certbot не установлен
@@ -1431,15 +1431,15 @@ certbot certonly --staging --dns-regru ...
 sudo certbot certificates
 
 # Просмотр конкретного сертификата
-sudo openssl x509 -in /etc/letsencrypt/live/dfv24.com/cert.pem -text -noout
+sudo openssl x509 -in /etc/letsencrypt/live/example.com/cert.pem -text -noout
 
 # Проверка даты истечения
-sudo openssl x509 -enddate -noout -in /etc/letsencrypt/live/dfv24.com/cert.pem
+sudo openssl x509 -enddate -noout -in /etc/letsencrypt/live/example.com/cert.pem
 ```
 
 ### Проверка сертификата в браузере
 
-1. Откройте ваш сайт в браузере: `https://dfv24.com`
+1. Откройте ваш сайт в браузере: `https://example.com`
 2. Нажмите на иконку замка в адресной строке
 3. Проверьте информацию о сертификате
 4. Убедитесь, что сертификат выдан Let's Encrypt и покрывает wildcard домен
@@ -1457,7 +1457,7 @@ sudo openssl x509 -enddate -noout -in /etc/letsencrypt/live/dfv24.com/cert.pem
 
 ### Вариант 1: Импорт существующего сертификата
 
-1. Войдите в Nginx Proxy Manager: http://192.168.10.14:81/
+1. Войдите в Nginx Proxy Manager: http://10.10.10.14:81/
 2. Перейдите в **SSL Certificates** → **Add SSL Certificate**
 3. Выберите **Custom**
 4. Вставьте содержимое файлов:
