@@ -1,0 +1,387 @@
+name: Build and Release (Gitea Native)
+
+# Этот workflow оптимизирован для Gitea
+# Использует нативные возможности Gitea Actions
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'release-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        default: 'dev'
+
+env:
+  APP_NAME: letsencrypt-regru
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  # ============================================================================
+  # Сборка для Linux
+  # ============================================================================
+  build-linux:
+    name: 🐧 Build Linux
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📦 Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+      
+      - name: 📚 Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pyinstaller
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install requests certbot cryptography
+          fi
+      
+      - name: ℹ️ Build info
+        run: |
+          make build-info
+      
+      - name: 🔨 Build Linux executable
+        run: |
+          make build-linux
+      
+      - name: ✅ Test executable
+        run: |
+          chmod +x dist/${{ env.APP_NAME }}
+          ./dist/${{ env.APP_NAME }} --help
+          ./dist/${{ env.APP_NAME }} --create-config /tmp/test_config.json
+      
+      - name: 📦 Create distribution package
+        run: |
+          make package-linux
+      
+      - name: 🔐 Generate checksums
+        run: |
+          cd dist
+          sha256sum ${{ env.APP_NAME }}-linux-x86_64.tar.gz > ${{ env.APP_NAME }}-linux-x86_64.tar.gz.sha256
+          md5sum ${{ env.APP_NAME }}-linux-x86_64.tar.gz > ${{ env.APP_NAME }}-linux-x86_64.tar.gz.md5
+          cat ${{ env.APP_NAME }}-linux-x86_64.tar.gz.sha256
+      
+      - name: 📤 Upload Linux package
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-package
+          path: |
+            dist/${{ env.APP_NAME }}-linux-x86_64.tar.gz
+            dist/${{ env.APP_NAME }}-linux-x86_64.tar.gz.sha256
+            dist/${{ env.APP_NAME }}-linux-x86_64.tar.gz.md5
+          retention-days: 7
+
+  # ============================================================================
+  # Сборка для Windows
+  # ============================================================================
+  build-windows:
+    name: 🪟 Build Windows
+    runs-on: windows-latest
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: 📚 Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pyinstaller
+          if (Test-Path requirements.txt) {
+            pip install -r requirements.txt
+          } else {
+            pip install requests certbot cryptography
+          }
+      
+      - name: 🔨 Build Windows executable
+        run: |
+          make build-windows
+      
+      - name: ✅ Test executable
+        run: |
+          dist\${{ env.APP_NAME }}.exe --help
+          dist\${{ env.APP_NAME }}.exe --create-config test_config.json
+      
+      - name: 📦 Create distribution package
+        run: |
+          make package-windows
+      
+      - name: 🔐 Generate checksums
+        run: |
+          cd dist
+          certutil -hashfile ${{ env.APP_NAME }}-windows-x86_64.zip SHA256 > ${{ env.APP_NAME }}-windows-x86_64.zip.sha256
+          certutil -hashfile ${{ env.APP_NAME }}-windows-x86_64.zip MD5 > ${{ env.APP_NAME }}-windows-x86_64.zip.md5
+          type ${{ env.APP_NAME }}-windows-x86_64.zip.sha256
+      
+      - name: 📤 Upload Windows package
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-package
+          path: |
+            dist/${{ env.APP_NAME }}-windows-x86_64.zip
+            dist/${{ env.APP_NAME }}-windows-x86_64.zip.sha256
+            dist/${{ env.APP_NAME }}-windows-x86_64.zip.md5
+          retention-days: 7
+
+  # ============================================================================
+  # Создание релиза в Gitea
+  # ============================================================================
+  create-release:
+    name: 📦 Create Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: 📥 Download Linux artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: linux-package
+          path: ./release
+      
+      - name: 📥 Download Windows artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: windows-package
+          path: ./release
+      
+      - name: 📋 List release files
+        run: |
+          echo "Release files:"
+          ls -lh ./release/
+      
+      - name: 🏷️ Get version info
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION"
+      
+      - name: 📝 Generate release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## 🎉 Let's Encrypt RegRu Manager ${{ steps.version.outputs.VERSION }}
+          
+          Автоматическое управление SSL сертификатами Let's Encrypt для доменов на reg.ru с интеграцией в Nginx Proxy Manager.
+          
+          ### 📦 Файлы релиза
+          
+          #### Linux (Ubuntu 20.04+, Debian 10+, CentOS 8+)
+          - **letsencrypt-regru-linux-x86_64.tar.gz** - Исполняемый файл (ELF 64-bit)
+          - **letsencrypt-regru-linux-x86_64.tar.gz.sha256** - SHA256 контрольная сумма
+          - **letsencrypt-regru-linux-x86_64.tar.gz.md5** - MD5 контрольная сумма
+          
+          #### Windows (10/11, Server 2019+)
+          - **letsencrypt-regru-windows-x86_64.zip** - Исполняемый файл (PE32+)
+          - **letsencrypt-regru-windows-x86_64.zip.sha256** - SHA256 контрольная сумма
+          - **letsencrypt-regru-windows-x86_64.zip.md5** - MD5 контрольная сумма
+          
+          ---
+          
+          ### 🚀 Быстрая установка
+          
+          #### Linux (одна команда):
+          ```bash
+          curl -fsSL https://your-gitea.com/api/v1/repos/${{ github.repository }}/releases/tags/${{ steps.version.outputs.VERSION }} | \
+            jq -r '.assets[] | select(.name | contains("linux")) | .browser_download_url' | \
+            xargs wget -O letsencrypt-regru.tar.gz && \
+            tar -xzf letsencrypt-regru.tar.gz && \
+            sudo mv letsencrypt-regru /usr/local/bin/ && \
+            sudo chmod +x /usr/local/bin/letsencrypt-regru
+          ```
+          
+          #### Или вручную:
+          ```bash
+          # 1. Скачать
+          wget https://your-gitea.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.VERSION }}/letsencrypt-regru-linux-x86_64.tar.gz
+          
+          # 2. Проверить контрольную сумму
+          wget https://your-gitea.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.VERSION }}/letsencrypt-regru-linux-x86_64.tar.gz.sha256
+          sha256sum -c letsencrypt-regru-linux-x86_64.tar.gz.sha256
+          
+          # 3. Распаковать и установить
+          tar -xzf letsencrypt-regru-linux-x86_64.tar.gz
+          sudo mv letsencrypt-regru /usr/local/bin/
+          sudo chmod +x /usr/local/bin/letsencrypt-regru
+          
+          # 4. Проверить
+          letsencrypt-regru --help
+          ```
+          
+          #### Windows:
+          ```powershell
+          # Скачать и распаковать
+          Invoke-WebRequest -Uri "https://your-gitea.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.VERSION }}/letsencrypt-regru-windows-x86_64.zip" -OutFile "letsencrypt-regru.zip"
+          Expand-Archive -Path letsencrypt-regru.zip -DestinationPath "C:\Program Files\LetsEncrypt-RegRu"
+          
+          # Проверить
+          & "C:\Program Files\LetsEncrypt-RegRu\letsencrypt-regru.exe" --help
+          ```
+          
+          ---
+          
+          ### ✨ Основные возможности
+          
+          - ✅ Автоматическое получение Let's Encrypt сертификатов
+          - ✅ DNS-валидация через API reg.ru
+          - ✅ Поддержка wildcard сертификатов (*.domain.com)
+          - ✅ Автоматическая загрузка в Nginx Proxy Manager
+          - ✅ Автоматическое обновление сертификатов
+          - ✅ Systemd интеграция для автоматизации
+          - ✅ Подробное логирование
+          - ✅ Генерация тестовых самоподписанных сертификатов
+          
+          ---
+          
+          ### 📋 Системные требования
+          
+          #### Linux:
+          - Ubuntu 20.04+ / Debian 10+ / CentOS 8+ / RHEL 8+
+          - certbot (устанавливается автоматически через `letsencrypt_regru.sh`)
+          - 50 MB свободного места
+          - Права root (sudo)
+          
+          #### Windows:
+          - Windows 10/11 или Server 2019+
+          - **Важно:** certbot не поддерживается напрямую на Windows
+          - Рекомендуется использовать WSL (Windows Subsystem for Linux)
+          
+          ---
+          
+          ### 📖 Документация
+          
+          - **[README.md](README.md)** - Полное руководство пользователя
+          - **[BUILD_GUIDE.md](BUILD_GUIDE.md)** - Руководство по сборке из исходников
+          - **[INSTALL_GUIDE.md](docs/INSTALL_GUIDE.md)** - Детальная инструкция по установке
+          - **[MAKEFILE_COMMANDS.md](MAKEFILE_COMMANDS.md)** - Справка по командам Makefile
+          
+          ---
+          
+          ### ⚠️ Важная информация
+          
+          1. **Certbot зависимость:**
+             - Исполняемый файл НЕ включает certbot
+             - certbot должен быть установлен в системе
+             - Используется через subprocess
+          
+          2. **Размер файла:**
+             - Linux: ~45-55 MB (включая Python runtime)
+             - Windows: ~40-50 MB (включая Python runtime)
+          
+          3. **Первый запуск:**
+             - Может занять 5-10 секунд (распаковка)
+             - Последующие запуски быстрее (~1-2 сек)
+          
+          4. **Безопасность:**
+             - Файлы подписаны контрольными суммами SHA256 и MD5
+             - Всегда проверяйте контрольные суммы перед использованием
+          
+          ---
+          
+          ### 🔐 Проверка контрольных сумм
+          
+          #### Linux:
+          ```bash
+          # SHA256
+          sha256sum -c letsencrypt-regru-linux-x86_64.tar.gz.sha256
+          
+          # MD5
+          md5sum -c letsencrypt-regru-linux-x86_64.tar.gz.md5
+          ```
+          
+          #### Windows:
+          ```powershell
+          # SHA256
+          certutil -hashfile letsencrypt-regru-windows-x86_64.zip SHA256
+          
+          # MD5
+          certutil -hashfile letsencrypt-regru-windows-x86_64.zip MD5
+          ```
+          
+          ---
+          
+          ### 🐛 Проблемы и поддержка
+          
+          Если у вас возникли проблемы:
+          
+          1. Проверьте [Issues](../../issues)
+          2. Создайте новый [Issue](../../issues/new)
+          3. См. раздел [Troubleshooting](BUILD_GUIDE.md#troubleshooting) в BUILD_GUIDE.md
+          
+          ---
+          
+          ### 📝 Changelog
+          
+          См. [коммиты](${{ github.server_url }}/${{ github.repository }}/commits/${{ steps.version.outputs.VERSION }}) для деталей изменений.
+          
+          ---
+          
+          **Автор:** Фофанов Дмитрий  
+          **Дата релиза:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
+          **Версия:** ${{ steps.version.outputs.VERSION }}
+          EOF
+          
+          cat release_notes.md
+      
+      - name: 🚀 Create Gitea Release
+        uses: actions/gitea-release@v1
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
+        with:
+          files: |
+            release/*
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: "Let's Encrypt RegRu Manager ${{ steps.version.outputs.VERSION }}"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+
+  # ============================================================================
+  # Уведомление о релизе (опционально)
+  # ============================================================================
+  notify:
+    name: 📢 Notify
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: 📧 Send notification
+        run: |
+          echo "Release created successfully!"
+          echo "Tag: ${{ github.ref_name }}"
+          echo "Repository: ${{ github.repository }}"
+          # Здесь можно добавить отправку уведомлений через webhook, email и т.д.

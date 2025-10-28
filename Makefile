@@ -25,7 +25,14 @@ YELLOW = \033[1;33m
 BLUE = \033[0;34m
 NC = \033[0m # No Color
 
-.PHONY: help install uninstall status check-root setup-dirs install-script install-service install-cron clean
+.PHONY: help install uninstall status check-root setup-dirs install-script install-service install-cron clean build build-linux build-windows build-all package-linux package-windows release
+
+# Переменные для сборки
+PYINSTALLER = pyinstaller
+APP_NAME = letsencrypt-regru
+DIST_DIR = dist
+BUILD_DIR_PY = build
+SPEC_FILE = $(APP_NAME).spec
 
 # ==============================================================================
 # Помощь
@@ -36,7 +43,7 @@ help:
 	@echo "$(BLUE)║  Makefile для управления Let's Encrypt SSL сертификатами      ║$(NC)"
 	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
-	@echo "$(GREEN)Доступные команды:$(NC)"
+	@echo "$(GREEN)Команды для установки:$(NC)"
 	@echo ""
 	@echo "  $(YELLOW)make install$(NC)      - Установить скрипт и настроить автоматизацию"
 	@echo "  $(YELLOW)make uninstall$(NC)    - Удалить скрипт и очистить систему"
@@ -45,6 +52,18 @@ help:
 	@echo "  $(YELLOW)make test-run$(NC)     - Тестовый запуск скрипта"
 	@echo "  $(YELLOW)make test-cert$(NC)    - Создать тестовый самоподписанный сертификат"
 	@echo "  $(YELLOW)make logs$(NC)         - Показать логи"
+	@echo ""
+	@echo "$(GREEN)Команды для сборки (PyInstaller):$(NC)"
+	@echo ""
+	@echo "  $(YELLOW)make build$(NC)         - Собрать исполняемый файл для текущей ОС"
+	@echo "  $(YELLOW)make build-linux$(NC)   - Собрать исполняемый файл для Linux"
+	@echo "  $(YELLOW)make build-windows$(NC) - Собрать исполняемый файл для Windows"
+	@echo "  $(YELLOW)make build-all$(NC)     - Собрать для всех платформ"
+	@echo "  $(YELLOW)make package-linux$(NC) - Создать tar.gz пакет для Linux"
+	@echo "  $(YELLOW)make package-windows$(NC) - Создать zip пакет для Windows"
+	@echo "  $(YELLOW)make release$(NC)       - Полный цикл релиза (build + package)"
+	@echo "  $(YELLOW)make clean-build$(NC)   - Очистить артефакты сборки"
+	@echo ""
 	@echo "  $(YELLOW)make help$(NC)         - Показать эту справку"
 	@echo ""
 
@@ -448,6 +467,302 @@ clean:
 	@find . -type f -name "*.pyc" -delete
 	@find . -type d -name "__pycache__" -delete
 	@echo "$(GREEN)✓ Очистка завершена$(NC)"
+
+# ==============================================================================
+# Сборка исполняемых файлов с PyInstaller
+# ==============================================================================
+
+# Установка PyInstaller
+install-pyinstaller:
+	@echo "$(YELLOW)→ Установка PyInstaller...$(NC)"
+	@if command -v pip3 >/dev/null 2>&1; then \
+		pip3 install --upgrade pyinstaller; \
+	elif command -v pip >/dev/null 2>&1; then \
+		pip install --upgrade pyinstaller; \
+	else \
+		echo "$(RED)✗ pip не найден. Установите pip сначала.$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ PyInstaller установлен$(NC)"
+
+# Сборка для текущей ОС
+build:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Сборка исполняемого файла для текущей ОС                     ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@if ! command -v $(PYINSTALLER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)PyInstaller не найден. Установка...$(NC)"; \
+		$(MAKE) install-pyinstaller; \
+	fi
+	@echo "$(YELLOW)→ Компиляция $(SCRIPT_NAME) в исполняемый файл...$(NC)"
+	@$(PYINSTALLER) --onefile \
+		--name $(APP_NAME) \
+		--add-data "README.md:." \
+		--hidden-import requests \
+		--hidden-import certbot \
+		--hidden-import cryptography \
+		--collect-all certbot \
+		--noconfirm \
+		$(SCRIPT_NAME)
+	@echo ""
+	@echo "$(GREEN)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(GREEN)║  ✓ Сборка завершена успешно!                                   ║$(NC)"
+	@echo "$(GREEN)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Исполняемый файл:$(NC)"
+	@ls -lh $(DIST_DIR)/$(APP_NAME) 2>/dev/null || dir $(DIST_DIR)\$(APP_NAME).exe 2>/dev/null || echo "  $(DIST_DIR)/$(APP_NAME)"
+	@echo ""
+	@echo "$(YELLOW)Размер файла:$(NC)"
+	@du -h $(DIST_DIR)/$(APP_NAME) 2>/dev/null || echo "  ~40-60 MB (включая Python runtime и все библиотеки)"
+	@echo ""
+	@echo "$(YELLOW)Примечание:$(NC)"
+	@echo "  • Исполняемый файл содержит весь Python runtime"
+	@echo "  • Certbot все равно должен быть установлен в системе"
+	@echo "  • Запускайте с sudo для работы с сертификатами"
+
+# Сборка для Linux
+build-linux:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Сборка исполняемого файла для Linux                          ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@UNAME=$$(uname -s 2>/dev/null || echo "Unknown"); \
+	if [ "$$UNAME" != "Linux" ]; then \
+		echo "$(RED)ВНИМАНИЕ: Сборка на $$UNAME, но целевая ОС - Linux$(NC)"; \
+		echo "$(YELLOW)Рекомендуется собирать на Linux для лучшей совместимости$(NC)"; \
+		echo ""; \
+	fi
+	@if ! command -v $(PYINSTALLER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)PyInstaller не найден. Установка...$(NC)"; \
+		$(MAKE) install-pyinstaller; \
+	fi
+	@echo "$(YELLOW)→ Компиляция для Linux (x86_64)...$(NC)"
+	@$(PYINSTALLER) --onefile \
+		--name $(APP_NAME) \
+		--add-data "README.md:." \
+		--hidden-import requests \
+		--hidden-import certbot \
+		--hidden-import cryptography \
+		--collect-all certbot \
+		--target-arch x86_64 \
+		--noconfirm \
+		$(SCRIPT_NAME)
+	@echo ""
+	@echo "$(GREEN)✓ Сборка для Linux завершена!$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Исполняемый файл:$(NC) $(DIST_DIR)/$(APP_NAME)"
+	@file $(DIST_DIR)/$(APP_NAME) 2>/dev/null || echo "  ELF 64-bit executable"
+	@ls -lh $(DIST_DIR)/$(APP_NAME) 2>/dev/null || echo ""
+
+# Сборка для Windows
+build-windows:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Сборка исполняемого файла для Windows                        ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@UNAME=$$(uname -s 2>/dev/null || echo "Windows"); \
+	SEPARATOR=";"; \
+	if [ "$$UNAME" = "Linux" ] || [ "$$UNAME" = "Darwin" ]; then \
+		echo "$(RED)ВНИМАНИЕ: Кросс-компиляция для Windows из $$UNAME$(NC)"; \
+		echo "$(YELLOW)Используем разделитель ':' вместо ';' для PyInstaller$(NC)"; \
+		echo "$(YELLOW)Рекомендуется: собирайте на нативной Windows для лучших результатов$(NC)"; \
+		echo ""; \
+		SEPARATOR=":"; \
+	fi; \
+	if ! command -v $(PYINSTALLER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)PyInstaller не найден. Установка...$(NC)"; \
+		$(MAKE) install-pyinstaller; \
+	fi; \
+	echo "$(YELLOW)→ Компиляция для Windows (x86_64) с разделителем $$SEPARATOR...$(NC)"; \
+	$(PYINSTALLER) --onefile \
+		--name $(APP_NAME) \
+		--add-data "README.md$${SEPARATOR}." \
+		--hidden-import requests \
+		--hidden-import certbot \
+		--hidden-import cryptography \
+		--collect-all certbot \
+		--icon NONE \
+		--noconfirm \
+		$(SCRIPT_NAME)
+	@echo ""
+	@echo "$(GREEN)✓ Сборка для Windows завершена!$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Исполняемый файл:$(NC) $(DIST_DIR)/$(APP_NAME).exe"
+	@ls -lh $(DIST_DIR)/$(APP_NAME).exe 2>/dev/null || dir $(DIST_DIR)\$(APP_NAME).exe 2>/dev/null || echo ""
+
+# Сборка для всех платформ
+build-all:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Сборка для всех платформ                                      ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@echo "$(RED)⚠️  ВНИМАНИЕ: Кросс-компиляция Windows из Linux НЕ РАБОТАЕТ!$(NC)"
+	@echo "$(YELLOW)→ PyInstaller не может создать .exe файл на Linux/macOS$(NC)"
+	@echo "$(YELLOW)→ Для Windows сборки используйте нативную Windows систему$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Рекомендации:$(NC)"
+	@echo "  • Собирать Linux версию на Linux (работает ✓)"
+	@echo "  • Собирать Windows версию на Windows (обязательно!)"
+	@echo "  • Использовать GitHub Actions для автоматической сборки"
+	@echo ""
+	@$(MAKE) build-linux
+	@echo ""
+	@UNAME=$$(uname -s 2>/dev/null || echo "Windows"); \
+	if [ "$$UNAME" != "Windows" ] && [ "$$UNAME" != "MINGW"* ] && [ "$$UNAME" != "MSYS"* ]; then \
+		echo "$(YELLOW)Пропускаем Windows сборку (текущая ОС: $$UNAME)$(NC)"; \
+		echo "$(YELLOW)Используйте Windows для создания .exe файла$(NC)"; \
+	else \
+		$(MAKE) build-windows; \
+	fi
+	@echo ""
+	@echo "$(GREEN)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(GREEN)║  ✓ Сборка завершена!                                           ║$(NC)"
+	@echo "$(GREEN)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Файлы в директории $(DIST_DIR)/:$(NC)"
+	@ls -lh $(DIST_DIR)/ 2>/dev/null || dir $(DIST_DIR) 2>/dev/null || echo "  Проверьте $(DIST_DIR)/"
+
+# Создание пакета для Linux (tar.gz)
+package-linux: build-linux
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Создание пакета для Linux                                     ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@echo "$(YELLOW)→ Подготовка файлов...$(NC)"
+	@mkdir -p $(DIST_DIR)/package
+	@cp $(DIST_DIR)/$(APP_NAME) $(DIST_DIR)/package/
+	@cp README.md $(DIST_DIR)/package/ 2>/dev/null || true
+	@cp -r systemd $(DIST_DIR)/package/ 2>/dev/null || true
+	@if [ -f "config.json.example" ]; then \
+		cp config.json.example $(DIST_DIR)/package/; \
+	fi
+	@echo "$(YELLOW)→ Создание архива...$(NC)"
+	@cd $(DIST_DIR)/package && tar -czf ../$(APP_NAME)-linux-x86_64.tar.gz *
+	@rm -rf $(DIST_DIR)/package
+	@echo ""
+	@echo "$(GREEN)✓ Пакет создан:$(NC) $(DIST_DIR)/$(APP_NAME)-linux-x86_64.tar.gz"
+	@ls -lh $(DIST_DIR)/$(APP_NAME)-linux-x86_64.tar.gz
+	@echo ""
+	@echo "$(YELLOW)Содержимое пакета:$(NC)"
+	@tar -tzf $(DIST_DIR)/$(APP_NAME)-linux-x86_64.tar.gz | head -10
+
+# Создание пакета для Windows (zip)
+package-windows: build-windows
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Создание пакета для Windows                                   ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@if [ ! -f "$(DIST_DIR)/$(APP_NAME).exe" ]; then \
+		echo "$(RED)✗ Ошибка: Файл $(APP_NAME).exe не найден$(NC)"; \
+		echo "$(YELLOW)⚠️  Кросс-компиляция для Windows из Linux/macOS не создает .exe файл!$(NC)"; \
+		echo "$(YELLOW)→ Используйте нативную Windows систему для сборки Windows версии$(NC)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)→ Подготовка файлов...$(NC)"
+	@mkdir -p $(DIST_DIR)/package
+	@cp $(DIST_DIR)/$(APP_NAME).exe $(DIST_DIR)/package/
+	@cp README.md $(DIST_DIR)/package/ 2>/dev/null || true
+	@if [ -f "config.json.example" ]; then cp config.json.example $(DIST_DIR)/package/; fi
+	@echo "$(YELLOW)→ Создание архива (tar.gz)...$(NC)"
+	@cd $(DIST_DIR)/package && tar -czf ../$(APP_NAME)-windows-x86_64.tar.gz *
+	@rm -rf $(DIST_DIR)/package
+	@echo ""
+	@echo "$(GREEN)✓ Пакет создан:$(NC) $(DIST_DIR)/$(APP_NAME)-windows-x86_64.tar.gz"
+	@ls -lh $(DIST_DIR)/$(APP_NAME)-windows-x86_64.tar.gz
+	@echo ""
+	@echo "$(YELLOW)Содержимое пакета:$(NC)"
+	@tar -tzf $(DIST_DIR)/$(APP_NAME)-windows-x86_64.tar.gz | head -10
+
+# Полный цикл релиза
+release:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  ПОЛНЫЙ ЦИКЛ РЕЛИЗА                                            ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@$(MAKE) clean-build
+	@$(MAKE) install-pyinstaller
+	@$(MAKE) build-all
+	@$(MAKE) package-linux
+	@$(MAKE) package-windows
+	@echo ""
+	@echo "$(GREEN)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(GREEN)║  ✓ РЕЛИЗ ГОТОВ!                                                ║$(NC)"
+	@echo "$(GREEN)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Артефакты релиза:$(NC)"
+	@ls -lh $(DIST_DIR)/*.tar.gz $(DIST_DIR)/*.zip 2>/dev/null || dir $(DIST_DIR)\*.zip 2>/dev/null || echo "  Проверьте $(DIST_DIR)/"
+	@echo ""
+	@echo "$(YELLOW)Контрольные суммы SHA256:$(NC)"
+	@cd $(DIST_DIR) && sha256sum *.tar.gz *.zip 2>/dev/null || \
+		cd $(DIST_DIR) && certutil -hashfile $(APP_NAME)-windows-x86_64.zip SHA256 2>/dev/null || \
+		echo "  Используйте sha256sum или certutil для проверки контрольных сумм"
+	@echo ""
+	@echo "$(YELLOW)Следующие шаги:$(NC)"
+	@echo "  1. Протестируйте исполняемые файлы"
+	@echo "  2. Создайте GitHub Release"
+	@echo "  3. Загрузите пакеты как Assets"
+
+# Тестирование собранного файла
+test-build:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Тестирование собранного файла                                 ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@if [ -f "$(DIST_DIR)/$(APP_NAME)" ]; then \
+		echo "$(YELLOW)→ Тестирование Linux версии...$(NC)"; \
+		chmod +x $(DIST_DIR)/$(APP_NAME); \
+		$(DIST_DIR)/$(APP_NAME) --help; \
+		echo ""; \
+		echo "$(GREEN)✓ Linux версия работает$(NC)"; \
+	elif [ -f "$(DIST_DIR)/$(APP_NAME).exe" ]; then \
+		echo "$(YELLOW)→ Тестирование Windows версии...$(NC)"; \
+		$(DIST_DIR)/$(APP_NAME).exe --help; \
+		echo ""; \
+		echo "$(GREEN)✓ Windows версия работает$(NC)"; \
+	else \
+		echo "$(RED)✗ Исполняемый файл не найден$(NC)"; \
+		echo "$(YELLOW)Запустите 'make build' сначала$(NC)"; \
+		exit 1; \
+	fi
+
+# Очистка артефактов сборки
+clean-build:
+	@echo "$(YELLOW)→ Очистка артефактов сборки...$(NC)"
+	@rm -rf $(BUILD_DIR_PY) $(DIST_DIR) $(SPEC_FILE) __pycache__ *.pyc
+	@echo "$(GREEN)✓ Артефакты сборки удалены$(NC)"
+
+# Информация о среде сборки
+build-info:
+	@echo "$(BLUE)╔════════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(BLUE)║  Информация о среде сборки                                     ║$(NC)"
+	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Система:$(NC)"
+	@echo "  ОС: $$(uname -s 2>/dev/null || echo 'Windows')"
+	@echo "  Архитектура: $$(uname -m 2>/dev/null || echo 'x86_64')"
+	@echo "  Ядро: $$(uname -r 2>/dev/null || echo 'N/A')"
+	@echo ""
+	@echo "$(YELLOW)Python:$(NC)"
+	@echo "  Версия: $$($(PYTHON) --version 2>&1)"
+	@echo "  Путь: $$(which $(PYTHON) 2>/dev/null || where $(PYTHON) 2>/dev/null || echo 'N/A')"
+	@echo ""
+	@echo "$(YELLOW)PyInstaller:$(NC)"
+	@if command -v $(PYINSTALLER) >/dev/null 2>&1; then \
+		echo "  Версия: $$($(PYINSTALLER) --version 2>&1)"; \
+		echo "  Путь: $$(which $(PYINSTALLER) 2>/dev/null || where $(PYINSTALLER) 2>/dev/null)"; \
+		echo "  $(GREEN)✓ Установлен$(NC)"; \
+	else \
+		echo "  $(RED)✗ Не установлен$(NC)"; \
+		echo "  Установите: make install-pyinstaller"; \
+	fi
+	@echo ""
+	@echo "$(YELLOW)Конфигурация сборки:$(NC)"
+	@echo "  Исходный файл: $(SCRIPT_NAME)"
+	@echo "  Название приложения: $(APP_NAME)"
+	@echo "  Директория сборки: $(DIST_DIR)/"
+	@echo ""
 
 # По умолчанию показываем помощь
 .DEFAULT_GOAL := help

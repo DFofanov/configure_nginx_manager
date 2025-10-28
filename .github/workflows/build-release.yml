@@ -1,0 +1,201 @@
+name: Build Releases
+
+on:
+  push:
+    tags:
+      - 'v*'  # Срабатывает на теги вида v1.0, v2.0.1 и т.д.
+  workflow_dispatch:  # Возможность запустить вручную
+
+jobs:
+  build-linux:
+    name: Build Linux Executable
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+      
+      - name: Build Linux executable
+        run: |
+          make build-linux
+      
+      - name: Test Linux executable
+        run: |
+          chmod +x dist/letsencrypt-regru
+          dist/letsencrypt-regru --help
+      
+      - name: Create Linux package
+        run: |
+          make package-linux
+      
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-executable
+          path: dist/letsencrypt-regru-linux-x86_64.tar.gz
+      
+      - name: Generate SHA256 checksum
+        run: |
+          cd dist
+          sha256sum letsencrypt-regru-linux-x86_64.tar.gz > letsencrypt-regru-linux-x86_64.tar.gz.sha256
+      
+      - name: Upload checksum
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-checksum
+          path: dist/letsencrypt-regru-linux-x86_64.tar.gz.sha256
+
+  build-windows:
+    name: Build Windows Executable
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+      
+      - name: Build Windows executable
+        run: |
+          make build-windows
+      
+      - name: Test Windows executable
+        run: |
+          dist\letsencrypt-regru.exe --help
+      
+      - name: Create Windows package
+        run: |
+          make package-windows
+      
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-executable
+          path: dist/letsencrypt-regru-windows-x86_64.zip
+      
+      - name: Generate SHA256 checksum
+        run: |
+          cd dist
+          certutil -hashfile letsencrypt-regru-windows-x86_64.zip SHA256 > letsencrypt-regru-windows-x86_64.zip.sha256
+      
+      - name: Upload checksum
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-checksum
+          path: dist/letsencrypt-regru-windows-x86_64.zip.sha256
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: linux-executable
+          path: ./artifacts
+      
+      - name: Download Linux checksum
+        uses: actions/download-artifact@v3
+        with:
+          name: linux-checksum
+          path: ./artifacts
+      
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: windows-executable
+          path: ./artifacts
+      
+      - name: Download Windows checksum
+        uses: actions/download-artifact@v3
+        with:
+          name: windows-checksum
+          path: ./artifacts
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./artifacts/letsencrypt-regru-linux-x86_64.tar.gz
+            ./artifacts/letsencrypt-regru-linux-x86_64.tar.gz.sha256
+            ./artifacts/letsencrypt-regru-windows-x86_64.zip
+            ./artifacts/letsencrypt-regru-windows-x86_64.zip.sha256
+          body: |
+            ## Let's Encrypt RegRu Manager ${{ github.ref_name }}
+            
+            ### 📦 Релизные пакеты
+            
+            **Linux (Ubuntu/Debian/CentOS):**
+            - `letsencrypt-regru-linux-x86_64.tar.gz` - Исполняемый файл + файлы
+            - `letsencrypt-regru-linux-x86_64.tar.gz.sha256` - Контрольная сумма
+            
+            **Windows:**
+            - `letsencrypt-regru-windows-x86_64.zip` - Исполняемый файл + файлы
+            - `letsencrypt-regru-windows-x86_64.zip.sha256` - Контрольная сумма
+            
+            ### 🚀 Быстрая установка
+            
+            **Linux:**
+            ```bash
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/letsencrypt-regru-linux-x86_64.tar.gz
+            tar -xzf letsencrypt-regru-linux-x86_64.tar.gz
+            sudo mv letsencrypt-regru /usr/local/bin/
+            sudo chmod +x /usr/local/bin/letsencrypt-regru
+            ```
+            
+            **Windows:**
+            Скачайте `letsencrypt-regru-windows-x86_64.zip` и распакуйте.
+            
+            ### 📖 Документация
+            
+            - [README.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md)
+            - [BUILD_GUIDE.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/BUILD_GUIDE.md)
+            - [INSTALL_GUIDE.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/INSTALL_GUIDE.md)
+            
+            ### ⚠️ Важно
+            
+            - Исполняемые файлы требуют установленного `certbot` в системе
+            - Linux версия требует права root (sudo)
+            - Windows версия не поддерживает certbot напрямую (используйте WSL)
+            
+            ### 🔐 Проверка контрольных сумм
+            
+            **Linux:**
+            ```bash
+            sha256sum -c letsencrypt-regru-linux-x86_64.tar.gz.sha256
+            ```
+            
+            **Windows:**
+            ```powershell
+            certutil -hashfile letsencrypt-regru-windows-x86_64.zip SHA256
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

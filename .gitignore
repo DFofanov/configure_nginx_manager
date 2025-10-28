@@ -30,6 +30,13 @@ PIPE_MANIFEST
 *.manifest
 *.spec
 
+# PyInstaller build artifacts
+build/
+dist/
+*.tar.gz
+*.zip
+*.sha256
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

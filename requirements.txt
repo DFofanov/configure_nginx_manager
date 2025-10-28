@@ -1,0 +1,13 @@
+# Зависимости для Let's Encrypt RegRu Manager
+
+# HTTP запросы к API
+requests>=2.25.0
+
+# Работа с SSL сертификатами
+cryptography>=3.4.0
+
+# Let's Encrypt клиент
+certbot>=1.12.0
+
+# Опционально: для сборки исполняемых файлов
+pyinstaller>=4.10
