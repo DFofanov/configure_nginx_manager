@@ -25,9 +25,26 @@
 
 ## Быстрая установка
 
+**Способ 1: Автоматическая установка (рекомендуется)**
+
+Самый быстрый способ - запустить установку напрямую с GitHub:
+
+```bash
+sudo bash -c "$(curl -fsSL https://github.com/DFofanov/configure_nginx_manager/raw/refs/heads/master/letsencrypt_regru.sh)"
+```
+
+Эта команда:
+- Автоматически скачает установочный скрипт
+- Запустит его с правами root
+- Проведет через интерактивную настройку
+
+**Способ 2: Через клонирование репозитория**
+
+Если вы хотите изучить код перед установкой:
+
 ```bash
 # 1. Скачайте репозиторий
-git clone https://github.com/YOUR_USERNAME/configure_nginx_manager.git
+git clone https://github.com/DFofanov/configure_nginx_manager.git
 cd configure_nginx_manager
 
 # 2. Дайте права на выполнение
