@@ -1,0 +1,16 @@
+[Unit]
+Description=Let's Encrypt Certificate Manager for reg.ru
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/letsencrypt-regru
+ExecStart=/opt/letsencrypt-regru/venv/bin/python /opt/letsencrypt-regru/letsencrypt_regru_api.py --config /etc/letsencrypt-regru/config.json --auto
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=letsencrypt-regru
+
+[Install]
+WantedBy=multi-user.target

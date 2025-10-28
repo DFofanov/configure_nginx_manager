@@ -1,0 +1,19 @@
+[Unit]
+Description=Let's Encrypt Certificate Auto-Renewal Timer
+Requires=letsencrypt-regru.service
+
+[Timer]
+# Запустить через 15 минут после загрузки системы
+OnBootSec=15min
+
+# Запускать каждые 12 часов
+OnUnitActiveSec=12h
+
+# Добавить случайную задержку до 1 часа
+RandomizedDelaySec=1h
+
+# Сохранять информацию о последнем запуске
+Persistent=true
+
+[Install]
+WantedBy=timers.target
