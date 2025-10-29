@@ -182,7 +182,7 @@ class RegRuAPI:
         
         try:
             self.logger.debug(f"Отправка запроса к API: {method}")
-            response = self.session.post(url, data=params)
+            response = self.session.post(url, data=params, timeout=30)
             response.raise_for_status()
             
             result = response.json()
@@ -192,9 +192,45 @@ class RegRuAPI:
                 return result
             else:
                 error_msg = result.get("error_text", "Неизвестная ошибка")
-                self.logger.error(f"Ошибка API: {error_msg}")
+                error_code = result.get("error_code", "unknown")
+                
+                # Обработка специфических ошибок
+                if "Access to API from this IP denied" in error_msg or error_code == "IP_DENIED":
+                    self.logger.error("=" * 80)
+                    self.logger.error("🚫 ОШИБКА ДОСТУПА К API REG.RU")
+                    self.logger.error("=" * 80)
+                    self.logger.error("❌ Доступ к API заблокирован для текущего IP адреса")
+                    self.logger.error("")
+                    self.logger.error("🔧 РЕШЕНИЕ ПРОБЛЕМЫ:")
+                    self.logger.error("1. Войдите в личный кабинет reg.ru")
+                    self.logger.error("2. Перейдите в 'Настройки' → 'Безопасность' → 'API'")
+                    self.logger.error("3. Добавьте текущий IP адрес в список разрешенных")
+                    self.logger.error("4. Или отключите ограничение по IP (менее безопасно)")
+                    self.logger.error("")
+                    self.logger.error("🌐 Текущий IP можно узнать командой:")
+                    self.logger.error("   curl -s https://ipinfo.io/ip")
+                    self.logger.error("   или на сайте: https://whatismyipaddress.com/")
+                    self.logger.error("")
+                    self.logger.error("📚 Документация API: https://www.reg.ru/support/api")
+                    self.logger.error("=" * 80)
+                elif "Invalid username or password" in error_msg:
+                    self.logger.error("=" * 80)
+                    self.logger.error("🔐 ОШИБКА АУТЕНТИФИКАЦИИ")
+                    self.logger.error("=" * 80)
+                    self.logger.error("❌ Неверные учетные данные")
+                    self.logger.error("🔧 Проверьте username и password в конфигурации")
+                    self.logger.error("=" * 80)
+                else:
+                    self.logger.error(f"Ошибка API reg.ru: {error_msg} (код: {error_code})")
+                
                 raise Exception(f"API Error: {error_msg}")
                 
+        except requests.exceptions.Timeout:
+            self.logger.error("Таймаут при обращении к API reg.ru (30 сек)")
+            raise
+        except requests.exceptions.ConnectionError:
+            self.logger.error("Ошибка соединения с API reg.ru. Проверьте интернет подключение")
+            raise
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Ошибка HTTP запроса: {e}")
             raise
@@ -254,6 +290,55 @@ class RegRuAPI:
             self.logger.error(f"Не удалось добавить TXT запись: {e}")
             return False
     
+    def get_current_ip(self) -> str:
+        """
+        Получение текущего публичного IP адреса
+        
+        Returns:
+            IP адрес или 'Неизвестно'
+        """
+        try:
+            response = requests.get("https://ipinfo.io/ip", timeout=10)
+            if response.status_code == 200:
+                return response.text.strip()
+        except:
+            try:
+                response = requests.get("https://api.ipify.org", timeout=10)
+                if response.status_code == 200:
+                    return response.text.strip()
+            except:
+                pass
+        return "Неизвестно"
+    
+    def test_api_access(self) -> bool:
+        """
+        Проверка доступности API reg.ru
+        
+        Returns:
+            True если API доступен
+        """
+        # Получаем текущий IP
+        current_ip = self.get_current_ip()
+        self.logger.info(f"Текущий IP адрес: {current_ip}")
+        self.logger.info("Проверка доступности API reg.ru...")
+        
+        try:
+            # Простой запрос для проверки доступа
+            params = {}
+            result = self._make_request("user/get_balance", params)
+            
+            if result and result.get("result") == "success":
+                balance = result.get("answer", {}).get("prepay", "Неизвестно")
+                self.logger.info(f"✅ API reg.ru доступен. Баланс: {balance} руб.")
+                return True
+            else:
+                self.logger.error("❌ API reg.ru недоступен")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Не удалось подключиться к API reg.ru: {e}")
+            return False
+    
     def remove_txt_record(self, domain: str, subdomain: str, txt_value: str) -> bool:
         """
         Удаление TXT записи
@@ -268,34 +353,38 @@ class RegRuAPI:
         """
         self.logger.info(f"Удаление TXT записи: {subdomain}.{domain}")
         
-        # Сначала получаем список всех записей
-        records = self.get_zone_records(domain)
-        
-        # Ищем нужную TXT запись
-        record_id = None
-        for record in records:
-            if (record.get("rectype") == "TXT" and 
-                record.get("subdomain") == subdomain and 
-                record.get("text") == txt_value):
-                record_id = record.get("id")
-                break
-        
-        if not record_id:
-            self.logger.warning("TXT запись для удаления не найдена")
-            return False
-        
-        params = {
-            "domain": domain,
-            "record_id": record_id
-        }
-        
         try:
+            # Сначала получаем список всех записей
+            records = self.get_zone_records(domain)
+            
+            # Ищем нужную TXT запись
+            record_id = None
+            for record in records:
+                if (record.get("rectype") == "TXT" and 
+                    record.get("subdomain") == subdomain and 
+                    record.get("text") == txt_value):
+                    record_id = record.get("id")
+                    break
+            
+            if not record_id:
+                self.logger.warning("TXT запись для удаления не найдена")
+                # Не считаем это критической ошибкой
+                return True
+            
+            params = {
+                "domain": domain,
+                "record_id": record_id
+            }
+            
             self._make_request("zone/remove_record", params)
             self.logger.info("TXT запись успешно удалена")
             return True
+            
         except Exception as e:
             self.logger.error(f"Не удалось удалить TXT запись: {e}")
-            return False
+            # Для cleanup hook не критично, если не удалось удалить
+            self.logger.warning("Продолжаем выполнение, несмотря на ошибку удаления")
+            return True
 
 
 # ==============================================================================
@@ -1219,6 +1308,11 @@ def main():
         help="Создать самоподписанный тестовый сертификат (для разработки и тестирования)",
         action="store_true"
     )
+    parser.add_argument(
+        "--test-api",
+        help="Протестировать подключение к API reg.ru",
+        action="store_true"
+    )
     
     args = parser.parse_args()
     
@@ -1232,6 +1326,41 @@ def main():
     
     # Настройка логирования
     logger = setup_logging(config["log_file"], args.verbose)
+    
+    # Тестирование API
+    if args.test_api:
+        logger.info("=" * 80)
+        logger.info("ТЕСТИРОВАНИЕ ПОДКЛЮЧЕНИЯ К API REG.RU")
+        logger.info("=" * 80)
+        
+        api = RegRuAPI(config["regru_username"], config["regru_password"], logger)
+        
+        # Тест подключения
+        if api.test_api_access():
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("🧪 ДОПОЛНИТЕЛЬНЫЕ ТЕСТЫ")
+            logger.info("=" * 80)
+            
+            # Тест получения DNS записей
+            try:
+                records = api.get_zone_records(config["domain"])
+                logger.info(f"✅ Получение DNS записей: успешно ({len(records)} записей)")
+            except Exception as e:
+                logger.error(f"❌ Получение DNS записей: ошибка - {e}")
+            
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("✅ ВСЕ ТЕСТЫ ЗАВЕРШЕНЫ")
+            logger.info("=" * 80)
+            logger.info("API reg.ru готов к использованию!")
+            return 0
+        else:
+            logger.error("=" * 80)
+            logger.error("❌ ТЕСТЫ НЕ ПРОЙДЕНЫ")
+            logger.error("=" * 80)
+            logger.error("Исправьте проблемы с API перед использованием скрипта")
+            return 1
     
     # Генерация тестового сертификата
     if args.test_cert:
@@ -1342,6 +1471,17 @@ def main():
     logger.info("=" * 60)
     logger.info("СКРИПТ УПРАВЛЕНИЯ SSL СЕРТИФИКАТАМИ LET'S ENCRYPT")
     logger.info("=" * 60)
+    
+    # Проверка доступности API reg.ru (кроме режимов только проверки)
+    if not args.check:
+        if not api.test_api_access():
+            logger.error("=" * 80)
+            logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: API reg.ru недоступен")
+            logger.error("=" * 80)
+            logger.error("Скрипт не может продолжить работу без доступа к API")
+            logger.error("Исправьте проблему и запустите скрипт заново")
+            return 1
+        logger.info("")
     
     # Выполнение действий
     if args.check:
