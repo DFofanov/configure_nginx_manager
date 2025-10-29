@@ -1112,7 +1112,15 @@ class LetsEncryptManager:
             "--expand",
         ] + domain_args
         
-        self.logger.info(f"Выполнение команды: {' '.join(cmd)}")
+        self.logger.info("=" * 80)
+        self.logger.info("ЗАПУСК CERTBOT")
+        self.logger.info("=" * 80)
+        self.logger.info(f"Команда: {' '.join(cmd)}")
+        self.logger.info(f"Python: {sys.executable}")
+        self.logger.info(f"Скрипт: {os.path.abspath(__file__)}")
+        self.logger.info(f"Auth hook: {sys.executable} {os.path.abspath(__file__)} --auth-hook")
+        self.logger.info(f"Cleanup hook: {sys.executable} {os.path.abspath(__file__)} --cleanup-hook")
+        self.logger.info("=" * 80)
         
         try:
             result = subprocess.run(
@@ -1481,9 +1489,16 @@ def main():
     
     # Обработка хуков для certbot
     if args.auth_hook:
+        logger.info("=" * 80)
+        logger.info("🔑 AUTH HOOK ВЫЗВАН")
+        logger.info("=" * 80)
+        
         # Certbot передает домен и токен через переменные окружения
         domain = os.environ.get("CERTBOT_DOMAIN")
         token = os.environ.get("CERTBOT_VALIDATION")
+        
+        logger.info(f"CERTBOT_DOMAIN: {domain}")
+        logger.info(f"CERTBOT_VALIDATION: {token[:20]}..." if token else "CERTBOT_VALIDATION: None")
         
         if domain and token:
             api = RegRuAPI(config["regru_username"], config["regru_password"], logger)
@@ -1495,8 +1510,15 @@ def main():
             return 1
     
     if args.cleanup_hook:
+        logger.info("=" * 80)
+        logger.info("🧹 CLEANUP HOOK ВЫЗВАН")
+        logger.info("=" * 80)
+        
         domain = os.environ.get("CERTBOT_DOMAIN")
         token = os.environ.get("CERTBOT_VALIDATION")
+        
+        logger.info(f"CERTBOT_DOMAIN: {domain}")
+        logger.info(f"CERTBOT_VALIDATION: {token[:20]}..." if token else "CERTBOT_VALIDATION: None")
         
         if domain and token:
             api = RegRuAPI(config["regru_username"], config["regru_password"], logger)
