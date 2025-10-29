@@ -968,7 +968,7 @@ class LetsEncryptManager:
         Обработчик DNS challenge - добавление TXT записи
         
         Args:
-            validation_domain: Домен для валидации (_acme-challenge.domain.com)
+            validation_domain: Домен для валидации (например, dfv24.com или *.dfv24.com)
             validation_token: Токен валидации
             
         Returns:
@@ -976,13 +976,17 @@ class LetsEncryptManager:
         """
         self.logger.info("=== DNS Challenge: Добавление TXT записи ===")
         
-        # Извлекаем поддомен из validation_domain
-        # Формат: _acme-challenge.domain.com или _acme-challenge
-        parts = validation_domain.replace(f".{self.domain}", "").split(".")
-        subdomain = parts[0] if parts else "_acme-challenge"
+        # Извлекаем основной домен из validation_domain
+        # Убираем wildcard если есть
+        base_domain = validation_domain.replace("*.", "")
+        
+        # Для DNS-01 challenge всегда используем _acme-challenge
+        subdomain = "_acme-challenge"
+        
+        self.logger.info(f"Домен: {base_domain}, Поддомен: {subdomain}")
         
         # Добавляем TXT запись
-        success = self.api.add_txt_record(self.domain, subdomain, validation_token)
+        success = self.api.add_txt_record(base_domain, subdomain, validation_token)
         
         if success:
             # Ждем распространения DNS
@@ -990,8 +994,8 @@ class LetsEncryptManager:
             self.logger.info(f"Ожидание распространения DNS ({wait_time} секунд)...")
             time.sleep(wait_time)
             
-            # Проверяем DNS запись
-            if self.verify_dns_record(subdomain, validation_token):
+            # Проверяем DNS запись (используем base_domain для проверки)
+            if self.verify_dns_record_external(base_domain, subdomain, validation_token):
                 self.logger.info("DNS валидация готова")
                 return True
             else:
@@ -1005,7 +1009,7 @@ class LetsEncryptManager:
         Обработчик очистки DNS challenge - удаление TXT записи
         
         Args:
-            validation_domain: Домен валидации
+            validation_domain: Домен валидации (например, dfv24.com или *.dfv24.com)
             validation_token: Токен валидации
             
         Returns:
@@ -1013,25 +1017,29 @@ class LetsEncryptManager:
         """
         self.logger.info("=== DNS Challenge: Удаление TXT записи ===")
         
-        parts = validation_domain.replace(f".{self.domain}", "").split(".")
-        subdomain = parts[0] if parts else "_acme-challenge"
+        # Извлекаем основной домен
+        base_domain = validation_domain.replace("*.", "")
+        subdomain = "_acme-challenge"
         
-        return self.api.remove_txt_record(self.domain, subdomain, validation_token)
+        self.logger.info(f"Домен: {base_domain}, Поддомен: {subdomain}")
+        
+        return self.api.remove_txt_record(base_domain, subdomain, validation_token)
     
-    def verify_dns_record(self, subdomain: str, expected_value: str) -> bool:
+    def verify_dns_record_external(self, domain: str, subdomain: str, expected_value: str) -> bool:
         """
-        Проверка наличия DNS записи
+        Проверка наличия DNS записи через внешний DNS
         
         Args:
+            domain: Основной домен
             subdomain: Поддомен
             expected_value: Ожидаемое значение TXT записи
             
         Returns:
             True если запись найдена
         """
-        import socket
+        import time
         
-        full_domain = f"{subdomain}.{self.domain}"
+        full_domain = f"{subdomain}.{domain}"
         attempts = self.config.get("dns_check_attempts", 10)
         interval = self.config.get("dns_check_interval", 10)
         
@@ -1059,6 +1067,19 @@ class LetsEncryptManager:
         
         self.logger.warning("DNS запись не найдена после всех попыток")
         return False
+    
+    def verify_dns_record(self, subdomain: str, expected_value: str) -> bool:
+        """
+        Проверка наличия DNS записи (использует self.domain)
+        
+        Args:
+            subdomain: Поддомен
+            expected_value: Ожидаемое значение TXT записи
+            
+        Returns:
+            True если запись найдена
+        """
+        return self.verify_dns_record_external(self.domain, subdomain, expected_value)
     
     def obtain_certificate(self) -> bool:
         """
