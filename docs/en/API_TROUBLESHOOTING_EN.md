@@ -89,6 +89,42 @@ curl -s https://ipinfo.io/ip
    sudo letsencrypt-regru --test-api
    ```
 
+## ❌ Issue: "IP exceeded allowed connection rate"
+
+### Cause
+Reg.ru API limits request frequency from single IP (typically 10-20 requests per minute).
+
+### ✅ Solution
+
+1. **Wait 5-10 minutes**
+   ```bash
+   # Wait before next attempt
+   sleep 600  # 10 minutes
+   sudo letsencrypt-regru --obtain
+   ```
+
+2. **Configure automation properly**
+   ```bash
+   # Check certificates once per day
+   sudo systemctl enable letsencrypt-regru.timer
+   sudo systemctl start letsencrypt-regru.timer
+   
+   # Check schedule
+   sudo systemctl cat letsencrypt-regru.timer
+   ```
+
+3. **Request frequency recommendations**
+   - ✅ Automatic check: **once per day**
+   - ✅ Manual check: **no more than once per hour**
+   - ❌ Avoid frequent `--test-api` tests
+   - ❌ Don't create frequent cron jobs
+
+4. **Use --check instead of --obtain**
+   ```bash
+   # Check without creating certificate
+   sudo letsencrypt-regru --check
+   ```
+
 ## ❌ Issue: Connection timeout
 
 ### ✅ Solution

@@ -220,6 +220,26 @@ class RegRuAPI:
                     self.logger.error("❌ Неверные учетные данные")
                     self.logger.error("🔧 Проверьте username и password в конфигурации")
                     self.logger.error("=" * 80)
+                elif "IP exceeded allowed connection rate" in error_msg or error_code == "IP_EXCEEDED_ALLOWED_CONNECTION_RATE":
+                    self.logger.error("=" * 80)
+                    self.logger.error("⏱️  ОШИБКА: ПРЕВЫШЕН ЛИМИТ ЗАПРОСОВ К API")
+                    self.logger.error("=" * 80)
+                    self.logger.error("❌ IP адрес превысил допустимую частоту подключений к API reg.ru")
+                    self.logger.error("")
+                    self.logger.error("🔧 РЕШЕНИЕ ПРОБЛЕМЫ:")
+                    self.logger.error("1. Подождите 5-10 минут перед следующей попыткой")
+                    self.logger.error("2. Не запускайте скрипт слишком часто")
+                    self.logger.error("3. Используйте --test-api только для диагностики")
+                    self.logger.error("4. Настройте systemd timer для автоматических проверок (раз в день)")
+                    self.logger.error("")
+                    self.logger.error("📊 ЛИМИТЫ API REG.RU:")
+                    self.logger.error("   • Обычно: не более 10-20 запросов в минуту с одного IP")
+                    self.logger.error("   • Рекомендация: проверка сертификатов 1-2 раза в день")
+                    self.logger.error("")
+                    self.logger.error("⚙️  АВТОМАТИЗАЦИЯ:")
+                    self.logger.error("   sudo systemctl enable letsencrypt-regru.timer")
+                    self.logger.error("   sudo systemctl start letsencrypt-regru.timer")
+                    self.logger.error("=" * 80)
                 else:
                     self.logger.error(f"Ошибка API reg.ru: {error_msg} (код: {error_code})")
                 
@@ -246,6 +266,10 @@ class RegRuAPI:
             Список DNS записей
         """
         self.logger.info(f"Получение DNS записей для домена: {domain}")
+        
+        # Задержка перед запросом (защита от rate limit)
+        import time
+        time.sleep(1)
         
         params = {
             "domain": domain,
@@ -274,6 +298,10 @@ class RegRuAPI:
             True если успешно, False в противном случае
         """
         self.logger.info(f"Добавление TXT записи: {subdomain}.{domain} = {txt_value}")
+        
+        # Задержка перед запросом (защита от rate limit)
+        import time
+        time.sleep(2)
         
         params = {
             "domain": domain,
@@ -323,6 +351,10 @@ class RegRuAPI:
         self.logger.info("Проверка доступности API reg.ru...")
         
         try:
+            # Небольшая задержка перед запросом (защита от rate limit)
+            import time
+            time.sleep(1)
+            
             # Простой запрос для проверки доступа
             params = {}
             result = self._make_request("user/get_balance", params)
