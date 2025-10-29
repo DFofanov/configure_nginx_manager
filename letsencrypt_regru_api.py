@@ -272,7 +272,7 @@ class RegRuAPI:
         time.sleep(1)
         
         params = {
-            "domain": domain,
+            "domain_name": domain,
         }
         
         result = self._make_request("zone/get_resource_records", params)
@@ -304,7 +304,7 @@ class RegRuAPI:
         time.sleep(2)
         
         params = {
-            "domain": domain,
+            "domain_name": domain,
             "subdomain": subdomain,
             "text": txt_value,
             "output_content_type": "plain"
@@ -404,7 +404,7 @@ class RegRuAPI:
                 return True
             
             params = {
-                "domain": domain,
+                "domain_name": domain,
                 "record_id": record_id
             }
             
