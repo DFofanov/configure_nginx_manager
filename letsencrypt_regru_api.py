@@ -974,35 +974,50 @@ class LetsEncryptManager:
         Returns:
             True если успешно
         """
-        self.logger.info("=== DNS Challenge: Добавление TXT записи ===")
-        
-        # Извлекаем основной домен из validation_domain
-        # Убираем wildcard если есть
-        base_domain = validation_domain.replace("*.", "")
-        
-        # Для DNS-01 challenge всегда используем _acme-challenge
-        subdomain = "_acme-challenge"
-        
-        self.logger.info(f"Домен: {base_domain}, Поддомен: {subdomain}")
-        
-        # Добавляем TXT запись
-        success = self.api.add_txt_record(base_domain, subdomain, validation_token)
-        
-        if success:
+        try:
+            self.logger.info("=== DNS Challenge: Добавление TXT записи ===")
+            
+            # Извлекаем основной домен из validation_domain
+            # Убираем wildcard если есть
+            base_domain = validation_domain.replace("*.", "")
+            
+            # Для DNS-01 challenge всегда используем _acme-challenge
+            subdomain = "_acme-challenge"
+            
+            self.logger.info(f"Validation Domain: {validation_domain}")
+            self.logger.info(f"Base Domain: {base_domain}")
+            self.logger.info(f"Subdomain: {subdomain}")
+            self.logger.info(f"Token: {validation_token[:20]}...")
+            
+            # Добавляем TXT запись
+            self.logger.info("Добавление TXT записи через API reg.ru...")
+            success = self.api.add_txt_record(base_domain, subdomain, validation_token)
+            
+            if not success:
+                self.logger.error("Не удалось добавить TXT запись")
+                return False
+            
+            self.logger.info("✅ TXT запись успешно добавлена")
+            
             # Ждем распространения DNS
             wait_time = self.config.get("dns_propagation_wait", 60)
             self.logger.info(f"Ожидание распространения DNS ({wait_time} секунд)...")
             time.sleep(wait_time)
             
             # Проверяем DNS запись (используем base_domain для проверки)
+            self.logger.info("Проверка распространения DNS...")
             if self.verify_dns_record_external(base_domain, subdomain, validation_token):
-                self.logger.info("DNS валидация готова")
+                self.logger.info("✅ DNS запись подтверждена через публичные DNS")
                 return True
             else:
-                self.logger.warning("DNS запись не распространилась вовремя, но продолжаем...")
+                self.logger.warning("⚠️ DNS запись не обнаружена через публичные DNS, но продолжаем...")
+                self.logger.warning("Let's Encrypt может использовать свои DNS серверы")
                 return True
-        
-        return False
+                
+        except Exception as e:
+            self.logger.error(f"💥 Ошибка в dns_challenge_hook: {e}")
+            self.logger.exception("Traceback:")
+            return False
     
     def dns_cleanup_hook(self, validation_domain: str, validation_token: str) -> bool:
         """
@@ -1081,14 +1096,24 @@ class LetsEncryptManager:
         """
         return self.verify_dns_record_external(self.domain, subdomain, expected_value)
     
-    def obtain_certificate(self) -> bool:
+    def obtain_certificate(self, staging: bool = False) -> bool:
         """
         Получение нового сертификата
+        
+        Args:
+            staging: Использовать staging окружение Let's Encrypt (для тестирования)
         
         Returns:
             True если успешно
         """
-        self.logger.info("=== Запрос нового SSL сертификата ===")
+        if staging:
+            self.logger.info("=== Запрос ТЕСТОВОГО SSL сертификата (Let's Encrypt Staging) ===")
+            self.logger.warning("⚠️  ВНИМАНИЕ: Это тестовый сертификат из staging окружения!")
+            self.logger.warning("⚠️  Браузеры не будут доверять этому сертификату")
+            self.logger.warning("⚠️  Используйте для тестирования DNS и автоматизации")
+            self.logger.warning("⚠️  Staging НЕ имеет лимитов запросов (в отличие от production)")
+        else:
+            self.logger.info("=== Запрос нового SSL сертификата ===")
         
         # Формируем список доменов
         domains = [self.domain]
@@ -1102,17 +1127,28 @@ class LetsEncryptManager:
         # Создаём временные wrapper скрипты для hooks
         import tempfile
         
+        # Получаем путь к конфигурации из аргументов командной строки
+        config_path = None
+        for i, arg in enumerate(sys.argv):
+            if arg in ['-c', '--config'] and i + 1 < len(sys.argv):
+                config_path = os.path.abspath(sys.argv[i + 1])
+                break
+        
+        if not config_path:
+            self.logger.error("Не указан путь к конфигурации. Используйте --config /path/to/config.json")
+            return False
+        
         # Auth hook wrapper
         auth_hook_script = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
         auth_hook_script.write('#!/bin/bash\n')
-        auth_hook_script.write(f'{sys.executable} {os.path.abspath(__file__)} --auth-hook\n')
+        auth_hook_script.write(f'{sys.executable} {os.path.abspath(__file__)} --config {config_path} --auth-hook\n')
         auth_hook_script.close()
         os.chmod(auth_hook_script.name, 0o755)
         
         # Cleanup hook wrapper
         cleanup_hook_script = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
         cleanup_hook_script.write('#!/bin/bash\n')
-        cleanup_hook_script.write(f'{sys.executable} {os.path.abspath(__file__)} --cleanup-hook\n')
+        cleanup_hook_script.write(f'{sys.executable} {os.path.abspath(__file__)} --config {config_path} --cleanup-hook\n')
         cleanup_hook_script.close()
         os.chmod(cleanup_hook_script.name, 0o755)
         
@@ -1127,16 +1163,28 @@ class LetsEncryptManager:
             "--agree-tos",
             "--non-interactive",
             "--expand",
-        ] + domain_args
+        ]
+        
+        # Добавляем --staging для тестового окружения
+        if staging:
+            cmd.append("--staging")
+            cmd.append("--break-my-certs")  # Разрешает перезапись production сертификатов staging версиями
+        
+        cmd.extend(domain_args)
         
         self.logger.info("=" * 80)
-        self.logger.info("ЗАПУСК CERTBOT")
+        if staging:
+            self.logger.info("ЗАПУСК CERTBOT (STAGING MODE)")
+        else:
+            self.logger.info("ЗАПУСК CERTBOT")
         self.logger.info("=" * 80)
+        self.logger.info(f"Режим: {'STAGING (тестовый)' if staging else 'PRODUCTION (боевой)'}")
         self.logger.info(f"Команда: {' '.join(cmd)}")
         self.logger.info(f"Python: {sys.executable}")
         self.logger.info(f"Скрипт: {os.path.abspath(__file__)}")
-        self.logger.info(f"Auth hook: {sys.executable} {os.path.abspath(__file__)} --auth-hook")
-        self.logger.info(f"Cleanup hook: {sys.executable} {os.path.abspath(__file__)} --cleanup-hook")
+        self.logger.info(f"Конфигурация: {config_path}")
+        self.logger.info(f"Auth hook: {sys.executable} {os.path.abspath(__file__)} --config {config_path} --auth-hook")
+        self.logger.info(f"Cleanup hook: {sys.executable} {os.path.abspath(__file__)} --config {config_path} --cleanup-hook")
         self.logger.info("=" * 80)
         
         try:
@@ -1341,7 +1389,59 @@ def main():
     
     # Парсинг аргументов командной строки
     parser = argparse.ArgumentParser(
-        description="Автоматическое управление SSL сертификатами Let's Encrypt через API reg.ru"
+        description="Автоматическое управление SSL сертификатами Let's Encrypt через API reg.ru",
+        epilog="""
+════════════════════════════════════════════════════════════════════════════════
+ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ
+════════════════════════════════════════════════════════════════════════════════
+
+Основные команды:
+  %(prog)s -c config.json --check              Проверить срок действия
+  %(prog)s -c config.json --obtain             Получить production сертификат
+  %(prog)s -c config.json --renew              Обновить сертификат
+  %(prog)s -c config.json --auto               Авто-режим (для cron/systemd)
+
+Команды тестирования:
+  %(prog)s -c config.json --staging            Тестовый Let's Encrypt (БЕЗ лимитов!)
+  %(prog)s -c config.json --test-cert          Самоподписанный (локально)
+  %(prog)s -c config.json --test-api           Проверить API reg.ru
+  %(prog)s -c config.json --test-dns           Проверить DNS записи
+
+Отладка:
+  %(prog)s -c config.json --obtain -v          Подробный вывод
+
+════════════════════════════════════════════════════════════════════════════════
+РЕКОМЕНДУЕМЫЙ WORKFLOW
+════════════════════════════════════════════════════════════════════════════════
+
+1. Проверка настройки:
+   %(prog)s -c config.json --test-api          ✓ API доступен?
+   %(prog)s -c config.json --test-dns          ✓ DNS работает?
+
+2. Тестирование (неограниченно):
+   %(prog)s -c config.json --staging           ✓ Полный процесс SSL
+
+3. Production:
+   %(prog)s -c config.json --obtain            ✓ Боевой сертификат
+
+════════════════════════════════════════════════════════════════════════════════
+СРАВНЕНИЕ РЕЖИМОВ ТЕСТИРОВАНИЯ
+════════════════════════════════════════════════════════════════════════════════
+
+  --staging         Полный Let's Encrypt, БЕЗ лимитов, ~2-3 мин, тестирует всё
+  --test-cert       Самоподпись, мгновенно, БЕЗ интернета, для локальной разработки
+  --test-dns        Только DNS, ~1-2 мин, не создает сертификат
+
+════════════════════════════════════════════════════════════════════════════════
+ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ
+════════════════════════════════════════════════════════════════════════════════
+
+Документация:  https://github.com/DFofanov/configure_nginx_manager
+Поддержка:     https://github.com/DFofanov/configure_nginx_manager/issues
+Лимиты LE:     5 сертификатов/неделю на домен (production only, staging БЕЗ лимитов)
+
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         "-c", "--config",
@@ -1353,54 +1453,69 @@ def main():
         help="Создать пример файла конфигурации",
         metavar="FILE"
     )
-    parser.add_argument(
-        "--obtain",
-        help="Получить новый сертификат",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--renew",
-        help="Обновить существующий сертификат",
-        action="store_true"
-    )
-    parser.add_argument(
+    # Основные команды
+    main_group = parser.add_argument_group('Основные команды')
+    main_group.add_argument(
         "--check",
         help="Проверить срок действия сертификата",
         action="store_true"
     )
-    parser.add_argument(
+    main_group.add_argument(
+        "--obtain",
+        help="Получить новый production сертификат Let's Encrypt",
+        action="store_true"
+    )
+    main_group.add_argument(
+        "--renew",
+        help="Обновить существующий сертификат",
+        action="store_true"
+    )
+    main_group.add_argument(
+        "--auto",
+        help="Автоматический режим: проверка и обновление при необходимости (для cron/systemd)",
+        action="store_true"
+    )
+    
+    # Команды тестирования
+    test_group = parser.add_argument_group('Команды тестирования')
+    test_group.add_argument(
+        "--staging",
+        help="Получить тестовый сертификат Let's Encrypt (staging CA, БЕЗ лимитов)",
+        action="store_true"
+    )
+    test_group.add_argument(
+        "--test-cert",
+        help="Создать самоподписанный сертификат (локальная разработка, БЕЗ интернета)",
+        action="store_true"
+    )
+    test_group.add_argument(
+        "--test-api",
+        help="Проверить доступ к API reg.ru (показывает IP, баланс)",
+        action="store_true"
+    )
+    test_group.add_argument(
+        "--test-dns",
+        help="Протестировать создание/удаление DNS записи (полная симуляция SSL процесса)",
+        action="store_true"
+    )
+    
+    # Служебные команды
+    service_group = parser.add_argument_group('Служебные команды (внутреннее использование)')
+    service_group.add_argument(
         "--auth-hook",
-        help="Внутренний хук для DNS аутентификации (используется certbot)",
+        help="Certbot authentication hook (создание DNS записи)",
         action="store_true"
     )
-    parser.add_argument(
+    service_group.add_argument(
         "--cleanup-hook",
-        help="Внутренний хук для очистки DNS (используется certbot)",
+        help="Certbot cleanup hook (удаление DNS записи)",
         action="store_true"
     )
+    
+    # Дополнительные параметры
     parser.add_argument(
         "-v", "--verbose",
-        help="Подробный вывод",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--auto",
-        help="Автоматический режим: проверка и обновление при необходимости",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--test-cert",
-        help="Создать самоподписанный тестовый сертификат (для разработки и тестирования)",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--test-api",
-        help="Протестировать подключение к API reg.ru",
-        action="store_true"
-    )
-    parser.add_argument(
-        "--test-dns",
-        help="Протестировать создание и удаление DNS записи (полный цикл как при SSL)",
+        help="Подробный вывод для диагностики",
         action="store_true"
     )
     
@@ -1627,45 +1742,77 @@ def main():
     
     # Обработка хуков для certbot
     if args.auth_hook:
-        logger.info("=" * 80)
-        logger.info("🔑 AUTH HOOK ВЫЗВАН")
-        logger.info("=" * 80)
-        
-        # Certbot передает домен и токен через переменные окружения
-        domain = os.environ.get("CERTBOT_DOMAIN")
-        token = os.environ.get("CERTBOT_VALIDATION")
-        
-        logger.info(f"CERTBOT_DOMAIN: {domain}")
-        logger.info(f"CERTBOT_VALIDATION: {token[:20]}..." if token else "CERTBOT_VALIDATION: None")
-        
-        if domain and token:
+        try:
+            logger.info("=" * 80)
+            logger.info("🔑 AUTH HOOK ВЫЗВАН")
+            logger.info("=" * 80)
+            
+            # Certbot передает домен и токен через переменные окружения
+            domain = os.environ.get("CERTBOT_DOMAIN")
+            token = os.environ.get("CERTBOT_VALIDATION")
+            
+            logger.info(f"CERTBOT_DOMAIN: {domain}")
+            logger.info(f"CERTBOT_VALIDATION: {token[:20]}..." if token else "CERTBOT_VALIDATION: None")
+            
+            if not domain or not token:
+                logger.error("CERTBOT_DOMAIN или CERTBOT_VALIDATION не установлены")
+                logger.error("Переменные окружения:")
+                for key in os.environ:
+                    if key.startswith("CERTBOT_"):
+                        logger.error(f"  {key}: {os.environ[key]}")
+                return 1
+            
             api = RegRuAPI(config["regru_username"], config["regru_password"], logger)
             manager = LetsEncryptManager(config, api, logger)
             success = manager.dns_challenge_hook(domain, token)
-            return 0 if success else 1
-        else:
-            logger.error("CERTBOT_DOMAIN или CERTBOT_VALIDATION не установлены")
+            
+            if success:
+                logger.info("✅ AUTH HOOK ЗАВЕРШЕН УСПЕШНО")
+                return 0
+            else:
+                logger.error("❌ AUTH HOOK ЗАВЕРШИЛСЯ С ОШИБКОЙ")
+                return 1
+                
+        except Exception as e:
+            logger.error(f"💥 КРИТИЧЕСКАЯ ОШИБКА В AUTH HOOK: {e}")
+            logger.exception("Traceback:")
             return 1
     
     if args.cleanup_hook:
-        logger.info("=" * 80)
-        logger.info("🧹 CLEANUP HOOK ВЫЗВАН")
-        logger.info("=" * 80)
-        
-        domain = os.environ.get("CERTBOT_DOMAIN")
-        token = os.environ.get("CERTBOT_VALIDATION")
-        
-        logger.info(f"CERTBOT_DOMAIN: {domain}")
-        logger.info(f"CERTBOT_VALIDATION: {token[:20]}..." if token else "CERTBOT_VALIDATION: None")
-        
-        if domain and token:
+        try:
+            logger.info("=" * 80)
+            logger.info("🧹 CLEANUP HOOK ВЫЗВАН")
+            logger.info("=" * 80)
+            
+            domain = os.environ.get("CERTBOT_DOMAIN")
+            token = os.environ.get("CERTBOT_VALIDATION")
+            
+            logger.info(f"CERTBOT_DOMAIN: {domain}")
+            logger.info(f"CERTBOT_VALIDATION: {token[:20]}..." if token else "CERTBOT_VALIDATION: None")
+            
+            if not domain or not token:
+                logger.error("CERTBOT_DOMAIN или CERTBOT_VALIDATION не установлены")
+                logger.error("Переменные окружения:")
+                for key in os.environ:
+                    if key.startswith("CERTBOT_"):
+                        logger.error(f"  {key}: {os.environ[key]}")
+                return 1
+            
             api = RegRuAPI(config["regru_username"], config["regru_password"], logger)
             manager = LetsEncryptManager(config, api, logger)
             success = manager.dns_cleanup_hook(domain, token)
-            return 0 if success else 1
-        else:
-            logger.error("CERTBOT_DOMAIN или CERTBOT_VALIDATION не установлены")
-            return 1
+            
+            if success:
+                logger.info("✅ CLEANUP HOOK ЗАВЕРШЕН УСПЕШНО")
+                return 0
+            else:
+                logger.warning("⚠️ CLEANUP HOOK ЗАВЕРШИЛСЯ С ПРЕДУПРЕЖДЕНИЕМ (не критично)")
+                return 0  # Cleanup hook не должен блокировать получение сертификата
+                
+        except Exception as e:
+            logger.error(f"💥 ОШИБКА В CLEANUP HOOK: {e}")
+            logger.exception("Traceback:")
+            return 0  # Cleanup hook не должен блокировать получение сертификата
     
     # Проверка прав root
     if os.geteuid() != 0:
@@ -1710,9 +1857,55 @@ def main():
             logger.info(f"Сертификат действителен ({days_left} дней)")
             return 0
     
+    elif args.staging:
+        # Получение ТЕСТОВОГО сертификата из staging окружения
+        logger.info("")
+        logger.info("🧪" * 40)
+        logger.info("РЕЖИМ STAGING: Тестовый сертификат Let's Encrypt")
+        logger.info("🧪" * 40)
+        logger.info("")
+        logger.info("📋 ИНФОРМАЦИЯ О STAGING РЕЖИМЕ:")
+        logger.info("  • Сертификат будет выдан staging CA (не доверенный)")
+        logger.info("  • Браузеры покажут предупреждение о безопасности")
+        logger.info("  • НЕТ лимитов на количество запросов (в отличие от production)")
+        logger.info("  • Идеально для тестирования автоматизации и DNS")
+        logger.info("  • Полностью идентичный процесс с production")
+        logger.info("")
+        logger.info("⚠️  НЕ используйте staging сертификаты на production сайтах!")
+        logger.info("")
+        
+        success = manager.obtain_certificate(staging=True)
+        
+        if success:
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("✅ ТЕСТОВЫЙ СЕРТИФИКАТ УСПЕШНО ПОЛУЧЕН")
+            logger.info("=" * 80)
+            logger.info("")
+            logger.info("📂 Расположение: /etc/letsencrypt/live/%s/" % config['domain'])
+            logger.info("")
+            logger.info("🔄 Следующие шаги:")
+            logger.info("  1. ✅ Проверьте что процесс прошел успешно")
+            logger.info("  2. ✅ Убедитесь что DNS записи создаются корректно")
+            logger.info("  3. ✅ Проверьте автоматизацию")
+            logger.info("  4. 🚀 Когда всё готово - получите production сертификат:")
+            logger.info("     sudo letsencrypt-regru --obtain")
+            logger.info("")
+            logger.info("💡 ВАЖНО: Staging сертификаты хранятся в той же директории,")
+            logger.info("           что и production. Для получения production сертификата")
+            logger.info("           просто запустите команду --obtain")
+            logger.info("")
+            
+            # Синхронизация с NPM (если включено)
+            if config.get("npm_enabled", False):
+                logger.warning("⚠️  Staging сертификат НЕ загружается в Nginx Proxy Manager")
+                logger.warning("   (staging сертификаты не предназначены для production)")
+        
+        return 0 if success else 1
+    
     elif args.obtain:
         # Принудительное получение нового сертификата
-        success = manager.obtain_certificate()
+        success = manager.obtain_certificate(staging=False)
         if success:
             manager.display_certificate_info()
             reload_webserver(logger)
