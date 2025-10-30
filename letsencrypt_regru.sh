@@ -532,13 +532,36 @@ display_summary() {
 update_application() {
     header "Обновление приложения"
     
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local github_raw_url="https://raw.githubusercontent.com/DFofanov/configure_nginx_manager/refs/heads/master"
+    
     msg_info "Остановка сервиса..."
     systemctl stop letsencrypt-regru.timer || true
     
     msg_info "Обновление файлов..."
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    cp "${script_dir}/letsencrypt_regru_api.py" "${APP_DIR}/"
-    chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+    
+    # Попытка скопировать локально или скачать с GitHub
+    if [ -f "${script_dir}/letsencrypt_regru_api.py" ]; then
+        msg_info "Копирование из локальной директории..."
+        cp "${script_dir}/letsencrypt_regru_api.py" "${APP_DIR}/"
+        chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+        msg_ok "Файл скопирован локально"
+    else
+        msg_info "Локальный файл не найден, скачивание с GitHub..."
+        if command -v curl &> /dev/null; then
+            if curl -fsSL "${github_raw_url}/letsencrypt_regru_api.py" -o "${APP_DIR}/letsencrypt_regru_api.py"; then
+                chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+                msg_ok "Файл успешно скачан с GitHub"
+            else
+                msg_error "Не удалось скачать файл с GitHub"
+                return 1
+            fi
+        else
+            msg_error "Не установлен curl для скачивания файлов"
+            msg_info "Установите: sudo apt-get install curl"
+            return 1
+        fi
+    fi
     
     msg_info "Обновление Python зависимостей..."
     source "${VENV_DIR}/bin/activate"

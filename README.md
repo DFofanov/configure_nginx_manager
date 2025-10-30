@@ -177,14 +177,18 @@ tail -f /var/log/letsencrypt-regru/letsencrypt_regru.log
 ### Управление установкой
 
 ```bash
-# Обновить приложение до последней версии
+# Обновить приложение до последней версии (из локального репозитория)
+cd configure_nginx_manager
 sudo bash letsencrypt_regru.sh update
+
+# Обновить приложение одной командой (без клонирования)
+curl -fsSL https://github.com/DFofanov/configure_nginx_manager/raw/refs/heads/master/letsencrypt_regru.sh | sudo bash -s update
 
 # Полностью удалить приложение (из репозитория)
 sudo bash letsencrypt_regru.sh uninstall
 
 # Удалить приложение одной командой (без клонирования)
-sudo bash -c "$(curl -fsSL https://github.com/DFofanov/configure_nginx_manager/raw/refs/heads/master/letsencrypt_regru.sh)" -- uninstall
+curl -fsSL https://github.com/DFofanov/configure_nginx_manager/raw/refs/heads/master/letsencrypt_regru.sh | sudo bash -s uninstall
 ```
 
 ### Расположение файлов
