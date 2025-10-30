@@ -186,51 +186,99 @@ install_application() {
     header "Установка приложения"
     
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local github_raw_url="https://raw.githubusercontent.com/DFofanov/configure_nginx_manager/refs/heads/master"
     
-    msg_info "Копирование основного скрипта..."
+    msg_info "Установка основного скрипта..."
     
     # Проверяем наличие файла в текущей директории
-    if [ ! -f "${script_dir}/letsencrypt_regru_api.py" ]; then
-        msg_error "Файл letsencrypt_regru_api.py не найден в ${script_dir}"
-        msg_info "Убедитесь, что вы запускаете скрипт из директории проекта"
-        msg_info "Текущая директория: $(pwd)"
-        msg_info "Директория скрипта: ${script_dir}"
-        msg_info "Содержимое директории:"
-        ls -la "${script_dir}" | grep -E "\.py$|\.sh$"
-        exit 1
+    if [ -f "${script_dir}/letsencrypt_regru_api.py" ]; then
+        msg_info "Файл найден локально, копируем из ${script_dir}"
+        cp "${script_dir}/letsencrypt_regru_api.py" "${APP_DIR}/"
+        chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+        msg_ok "Файл скопирован из локальной директории"
+    else
+        msg_warn "Файл letsencrypt_regru_api.py не найден локально"
+        msg_info "Скачивание с GitHub..."
+        
+        if command -v curl &> /dev/null; then
+            if curl -fsSL "${github_raw_url}/letsencrypt_regru_api.py" -o "${APP_DIR}/letsencrypt_regru_api.py"; then
+                chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+                msg_ok "Файл успешно скачан с GitHub"
+            else
+                msg_error "Не удалось скачать файл с GitHub"
+                msg_info "URL: ${github_raw_url}/letsencrypt_regru_api.py"
+                exit 1
+            fi
+        elif command -v wget &> /dev/null; then
+            if wget -q "${github_raw_url}/letsencrypt_regru_api.py" -O "${APP_DIR}/letsencrypt_regru_api.py"; then
+                chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+                msg_ok "Файл успешно скачан с GitHub (wget)"
+            else
+                msg_error "Не удалось скачать файл с GitHub"
+                msg_info "URL: ${github_raw_url}/letsencrypt_regru_api.py"
+                exit 1
+            fi
+        else
+            msg_error "Не установлены curl или wget для скачивания файлов"
+            msg_info "Установите один из них: sudo apt-get install curl"
+            exit 1
+        fi
     fi
     
-    cp "${script_dir}/letsencrypt_regru_api.py" "${APP_DIR}/"
-    chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
+    msg_info "Установка дополнительных файлов..."
     
-    msg_info "Копирование файлов конфигурации..."
+    # config.json.example
     if [ -f "${script_dir}/config.json.example" ]; then
         cp "${script_dir}/config.json.example" "${CONFIG_DIR}/"
         msg_ok "Пример конфигурации скопирован"
     else
-        msg_warn "Файл config.json.example не найден, пропускаем"
+        msg_info "Скачивание config.json.example с GitHub..."
+        if command -v curl &> /dev/null; then
+            curl -fsSL "${github_raw_url}/config.json.example" -o "${CONFIG_DIR}/config.json.example" 2>/dev/null && \
+                msg_ok "config.json.example скачан с GitHub" || \
+                msg_warn "Не удалось скачать config.json.example"
+        fi
     fi
     
-    msg_info "Копирование README..."
+    # README.md
     if [ -f "${script_dir}/README.md" ]; then
         cp "${script_dir}/README.md" "${APP_DIR}/"
         msg_ok "README.md скопирован"
     else
-        msg_warn "Файл README.md не найден, пропускаем"
+        msg_info "Скачивание README.md с GitHub..."
+        if command -v curl &> /dev/null; then
+            curl -fsSL "${github_raw_url}/README.md" -o "${APP_DIR}/README.md" 2>/dev/null && \
+                msg_ok "README.md скачан с GitHub" || \
+                msg_warn "Не удалось скачать README.md"
+        fi
     fi
     
-    msg_info "Копирование systemd файлов..."
-    if [ -d "${script_dir}/systemd" ]; then
-        if [ -f "${script_dir}/systemd/letsencrypt-regru.service" ]; then
-            cp "${script_dir}/systemd/letsencrypt-regru.service" "/etc/systemd/system/"
-            msg_ok "Service файл скопирован"
-        fi
-        if [ -f "${script_dir}/systemd/letsencrypt-regru.timer" ]; then
-            cp "${script_dir}/systemd/letsencrypt-regru.timer" "/etc/systemd/system/"
-            msg_ok "Timer файл скопирован"
-        fi
+    msg_info "Установка systemd файлов..."
+    
+    # Systemd service
+    if [ -f "${script_dir}/systemd/letsencrypt-regru.service" ]; then
+        cp "${script_dir}/systemd/letsencrypt-regru.service" "/etc/systemd/system/"
+        msg_ok "Service файл скопирован"
     else
-        msg_warn "Директория systemd не найдена, systemd файлы будут созданы автоматически"
+        msg_info "Скачивание letsencrypt-regru.service с GitHub..."
+        if command -v curl &> /dev/null; then
+            curl -fsSL "${github_raw_url}/systemd/letsencrypt-regru.service" -o "/etc/systemd/system/letsencrypt-regru.service" 2>/dev/null && \
+                msg_ok "Service файл скачан с GitHub" || \
+                msg_warn "Не удалось скачать service файл, будет создан автоматически"
+        fi
+    fi
+    
+    # Systemd timer
+    if [ -f "${script_dir}/systemd/letsencrypt-regru.timer" ]; then
+        cp "${script_dir}/systemd/letsencrypt-regru.timer" "/etc/systemd/system/"
+        msg_ok "Timer файл скопирован"
+    else
+        msg_info "Скачивание letsencrypt-regru.timer с GitHub..."
+        if command -v curl &> /dev/null; then
+            curl -fsSL "${github_raw_url}/systemd/letsencrypt-regru.timer" -o "/etc/systemd/system/letsencrypt-regru.timer" 2>/dev/null && \
+                msg_ok "Timer файл скачан с GitHub" || \
+                msg_warn "Не удалось скачать timer файл, будет создан автоматически"
+        fi
     fi
     
     msg_ok "Приложение установлено"
