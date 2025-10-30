@@ -410,11 +410,16 @@ display_summary() {
     echo "   • Сертификаты:   ${CERT_DIR}"
     echo ""
     echo "🔧 Доступные команды:"
-    echo "   • letsencrypt-regru --check          # Проверить срок действия"
+    echo "   • letsencrypt-regru --check          # Проверить срок действия сертификата"
     echo "   • letsencrypt-regru --obtain         # Получить новый сертификат"
-    echo "   • letsencrypt-regru --renew          # Обновить сертификат"
-    echo "   • letsencrypt-regru --test-cert      # Создать тестовый сертификат"
+    echo "   • letsencrypt-regru --renew          # Обновить существующий сертификат"
+    echo "   • letsencrypt-regru --test-cert      # Создать тестовый самоподписанный сертификат"
     echo "   • letsencrypt-regru --auto           # Автоматическая проверка и обновление"
+    echo "   • letsencrypt-regru --test-api       # Проверить доступ к API reg.ru"
+    echo "   • letsencrypt-regru --test-dns       # Тестовое создание DNS записи TXT"
+    echo "   • letsencrypt-regru --auth-hook      # Certbot auth hook (внутреннее)"
+    echo "   • letsencrypt-regru --cleanup-hook   # Certbot cleanup hook (внутреннее)"
+    echo "   • letsencrypt-regru --help           # Показать справку"
     echo ""
     echo "⏰ Автоматическое обновление:"
     echo "   • Сервис запускается каждые 12 часов"
@@ -467,8 +472,15 @@ update_application() {
 uninstall_application() {
     header "Удаление приложения"
     
-    msg_warn "ВНИМАНИЕ: Это удалит все файлы приложения"
-    msg_warn "Сертификаты в ${CERT_DIR} будут сохранены"
+    msg_warn "ВНИМАНИЕ: Это удалит следующие компоненты:"
+    echo "   • Приложение:        ${APP_DIR}"
+    echo "   • Systemd сервисы:   /etc/systemd/system/letsencrypt-regru.*"
+    echo "   • Команда:           /usr/local/bin/letsencrypt-regru"
+    echo ""
+    msg_info "Будут сохранены:"
+    echo "   • Сертификаты:       ${CERT_DIR}"
+    echo "   • Конфигурация:      ${CONFIG_DIR}/config.json (можно удалить отдельно)"
+    echo "   • Логи:              ${LOG_DIR} (можно удалить отдельно)"
     echo ""
     read -p "Продолжить удаление? (y/N): " -n 1 -r
     echo ""
@@ -480,7 +492,9 @@ uninstall_application() {
     
     msg_info "Остановка и отключение сервисов..."
     systemctl stop letsencrypt-regru.timer || true
+    systemctl stop letsencrypt-regru.service || true
     systemctl disable letsencrypt-regru.timer || true
+    systemctl disable letsencrypt-regru.service || true
     
     msg_info "Удаление systemd файлов..."
     rm -f /etc/systemd/system/letsencrypt-regru.service
@@ -491,15 +505,40 @@ uninstall_application() {
     rm -rf "$APP_DIR"
     rm -f /usr/local/bin/letsencrypt-regru
     
-    msg_info "Удаление конфигурации и логов..."
-    read -p "Удалить конфигурацию и логи? (y/N): " -n 1 -r
+    msg_ok "Приложение удалено"
     echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf "$CONFIG_DIR"
-        rm -rf "$LOG_DIR"
+    
+    # Опционально удаляем конфигурацию
+    if [ -d "$CONFIG_DIR" ]; then
+        msg_warn "Удалить конфигурацию?"
+        echo "   Путь: ${CONFIG_DIR}/config.json"
+        read -p "Удалить конфигурацию? (y/N): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$CONFIG_DIR"
+            msg_ok "Конфигурация удалена"
+        else
+            msg_info "Конфигурация сохранена: ${CONFIG_DIR}/config.json"
+        fi
     fi
     
-    msg_ok "Приложение удалено"
+    # Опционально удаляем логи
+    if [ -d "$LOG_DIR" ]; then
+        msg_warn "Удалить логи?"
+        echo "   Путь: ${LOG_DIR}"
+        read -p "Удалить логи? (y/N): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$LOG_DIR"
+            msg_ok "Логи удалены"
+        else
+            msg_info "Логи сохранены: ${LOG_DIR}"
+        fi
+    fi
+    
+    echo ""
+    msg_ok "Удаление завершено!"
+    msg_info "Сертификаты сохранены в: ${CERT_DIR}"
 }
 
 # ==============================================================================
