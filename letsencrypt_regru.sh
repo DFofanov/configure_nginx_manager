@@ -532,7 +532,7 @@ display_summary() {
 update_application() {
     header "Обновление приложения"
     
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
     local github_raw_url="https://raw.githubusercontent.com/DFofanov/configure_nginx_manager/refs/heads/master"
     
     msg_info "Остановка сервиса..."
@@ -541,13 +541,13 @@ update_application() {
     msg_info "Обновление файлов..."
     
     # Попытка скопировать локально или скачать с GitHub
-    if [ -f "${script_dir}/letsencrypt_regru_api.py" ]; then
+    if [ -n "${script_dir}" ] && [ -f "${script_dir}/letsencrypt_regru_api.py" ]; then
         msg_info "Копирование из локальной директории..."
         cp "${script_dir}/letsencrypt_regru_api.py" "${APP_DIR}/"
         chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
         msg_ok "Файл скопирован локально"
     else
-        msg_info "Локальный файл не найден, скачивание с GitHub..."
+        msg_info "Скачивание обновления с GitHub..."
         if command -v curl &> /dev/null; then
             if curl -fsSL "${github_raw_url}/letsencrypt_regru_api.py" -o "${APP_DIR}/letsencrypt_regru_api.py"; then
                 chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
