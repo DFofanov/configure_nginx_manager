@@ -188,17 +188,49 @@ install_application() {
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     
     msg_info "Копирование основного скрипта..."
+    
+    # Проверяем наличие файла в текущей директории
+    if [ ! -f "${script_dir}/letsencrypt_regru_api.py" ]; then
+        msg_error "Файл letsencrypt_regru_api.py не найден в ${script_dir}"
+        msg_info "Убедитесь, что вы запускаете скрипт из директории проекта"
+        msg_info "Текущая директория: $(pwd)"
+        msg_info "Директория скрипта: ${script_dir}"
+        msg_info "Содержимое директории:"
+        ls -la "${script_dir}" | grep -E "\.py$|\.sh$"
+        exit 1
+    fi
+    
     cp "${script_dir}/letsencrypt_regru_api.py" "${APP_DIR}/"
     chmod 755 "${APP_DIR}/letsencrypt_regru_api.py"
     
     msg_info "Копирование файлов конфигурации..."
     if [ -f "${script_dir}/config.json.example" ]; then
         cp "${script_dir}/config.json.example" "${CONFIG_DIR}/"
+        msg_ok "Пример конфигурации скопирован"
+    else
+        msg_warn "Файл config.json.example не найден, пропускаем"
     fi
     
-    msg_info "Копирование документации..."
-    if [ -d "${script_dir}/docs" ]; then
-        cp -r "${script_dir}/docs" "${APP_DIR}/"
+    msg_info "Копирование README..."
+    if [ -f "${script_dir}/README.md" ]; then
+        cp "${script_dir}/README.md" "${APP_DIR}/"
+        msg_ok "README.md скопирован"
+    else
+        msg_warn "Файл README.md не найден, пропускаем"
+    fi
+    
+    msg_info "Копирование systemd файлов..."
+    if [ -d "${script_dir}/systemd" ]; then
+        if [ -f "${script_dir}/systemd/letsencrypt-regru.service" ]; then
+            cp "${script_dir}/systemd/letsencrypt-regru.service" "/etc/systemd/system/"
+            msg_ok "Service файл скопирован"
+        fi
+        if [ -f "${script_dir}/systemd/letsencrypt-regru.timer" ]; then
+            cp "${script_dir}/systemd/letsencrypt-regru.timer" "/etc/systemd/system/"
+            msg_ok "Timer файл скопирован"
+        fi
+    else
+        msg_warn "Директория systemd не найдена, systemd файлы будут созданы автоматически"
     fi
     
     msg_ok "Приложение установлено"

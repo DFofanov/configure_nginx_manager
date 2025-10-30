@@ -1398,6 +1398,11 @@ def main():
         help="Протестировать подключение к API reg.ru",
         action="store_true"
     )
+    parser.add_argument(
+        "--test-dns",
+        help="Протестировать создание и удаление DNS записи (полный цикл как при SSL)",
+        action="store_true"
+    )
     
     args = parser.parse_args()
     
@@ -1411,6 +1416,115 @@ def main():
     
     # Настройка логирования
     logger = setup_logging(config["log_file"], args.verbose)
+    
+    # Тестирование DNS записей (полный цикл как при создании SSL)
+    if args.test_dns:
+        logger.info("=" * 80)
+        logger.info("ТЕСТИРОВАНИЕ СОЗДАНИЯ DNS ЗАПИСИ ДЛЯ SSL")
+        logger.info("=" * 80)
+        logger.info("Этот тест симулирует процесс создания SSL сертификата:")
+        logger.info("1. Проверка подключения к API")
+        logger.info("2. Создание TXT записи _acme-challenge")
+        logger.info("3. Проверка распространения DNS")
+        logger.info("4. Удаление тестовой записи")
+        logger.info("=" * 80)
+        logger.info("")
+        
+        api = RegRuAPI(config["regru_username"], config["regru_password"], logger)
+        domain = config["domain"]
+        test_subdomain = "_acme-challenge"
+        test_value = f"test-value-{int(time.time())}"
+        
+        all_passed = True
+        
+        # Шаг 1: Проверка API
+        logger.info("📋 ШАГ 1/4: Проверка подключения к API reg.ru")
+        if not api.test_api_access():
+            logger.error("❌ API недоступен. Тест прерван.")
+            return 1
+        logger.info("✅ API доступен")
+        logger.info("")
+        
+        # Шаг 2: Создание TXT записи
+        logger.info("📋 ШАГ 2/4: Создание тестовой TXT записи")
+        logger.info(f"   Домен: {domain}")
+        logger.info(f"   Поддомен: {test_subdomain}")
+        logger.info(f"   Значение: {test_value}")
+        
+        if api.add_txt_record(domain, test_subdomain, test_value):
+            logger.info("✅ TXT запись создана успешно")
+        else:
+            logger.error("❌ Не удалось создать TXT запись")
+            all_passed = False
+        logger.info("")
+        
+        if all_passed:
+            # Шаг 3: Ожидание распространения DNS
+            logger.info("📋 ШАГ 3/4: Ожидание распространения DNS")
+            wait_time = config.get("dns_propagation_wait", 60)
+            logger.info(f"   Ожидаем {wait_time} секунд...")
+            
+            for i in range(wait_time):
+                if i % 10 == 0:
+                    logger.info(f"   ⏳ Прошло {i}/{wait_time} секунд")
+                time.sleep(1)
+            
+            logger.info("✅ Ожидание завершено")
+            logger.info("")
+            
+            # Проверка DNS через nslookup
+            logger.info("📋 ШАГ 3.5/4: Проверка DNS записи через nslookup")
+            full_domain = f"{test_subdomain}.{domain}"
+            try:
+                result = subprocess.run(
+                    ["nslookup", "-type=TXT", full_domain],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if test_value in result.stdout:
+                    logger.info(f"✅ DNS запись найдена для {full_domain}")
+                    logger.info("   Вывод nslookup:")
+                    for line in result.stdout.split("\n"):
+                        if test_value in line or "text =" in line.lower():
+                            logger.info(f"   {line.strip()}")
+                else:
+                    logger.warning(f"⚠️  DNS запись НЕ найдена для {full_domain}")
+                    logger.warning("   Это может быть нормально, если DNS ещё не распространился")
+                    logger.warning("   Certbot будет ждать дольше при реальном создании сертификата")
+            except Exception as e:
+                logger.warning(f"⚠️  Не удалось проверить DNS: {e}")
+            
+            logger.info("")
+        
+        # Шаг 4: Удаление тестовой записи
+        logger.info("📋 ШАГ 4/4: Удаление тестовой записи")
+        if api.remove_txt_record(domain, test_subdomain, test_value):
+            logger.info("✅ TXT запись удалена успешно")
+        else:
+            logger.warning("⚠️  Не удалось удалить TXT запись (возможно уже удалена)")
+        
+        logger.info("")
+        logger.info("=" * 80)
+        if all_passed:
+            logger.info("✅ ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО")
+            logger.info("=" * 80)
+            logger.info("")
+            logger.info("🎉 Система готова для создания SSL сертификата!")
+            logger.info("")
+            logger.info("Следующие шаги:")
+            logger.info("1. Убедитесь что ваш IP добавлен в белый список API reg.ru")
+            logger.info("2. Запустите: sudo letsencrypt-regru --obtain")
+            logger.info("3. Или настройте автоматическое обновление:")
+            logger.info("   sudo systemctl enable letsencrypt-regru.timer")
+            logger.info("   sudo systemctl start letsencrypt-regru.timer")
+            return 0
+        else:
+            logger.error("❌ НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОЙДЕНЫ")
+            logger.error("=" * 80)
+            logger.error("Исправьте проблемы перед созданием SSL сертификата")
+            return 1
     
     # Тестирование API
     if args.test_api:
