@@ -150,6 +150,9 @@ letsencrypt-regru --help
 letsencrypt-regru --obtain -v
 letsencrypt-regru --check -v
 letsencrypt-regru --staging -v
+
+# Очистить lock-файлы Certbot (если процесс завис)
+letsencrypt-regru --force-cleanup
 ```
 
 #### ⚙️ Служебные команды (внутреннее использование)
@@ -1519,6 +1522,40 @@ nslookup -type=TXT _acme-challenge.example.com
 # или
 dig TXT _acme-challenge.example.com
 ```
+
+### Проблема: "Another instance of Certbot is already running"
+
+**Причина:** Предыдущий процесс Certbot не завершился корректно или остались lock-файлы.
+
+**Решение:**
+
+```bash
+# Вариант 1: Принудительная очистка lock-файлов (рекомендуется)
+letsencrypt-regru --force-cleanup
+
+# Вариант 2: Ручная очистка
+# Проверьте запущенные процессы certbot
+ps aux | grep certbot
+
+# Остановите зависшие процессы
+sudo pkill certbot
+# Или принудительно
+sudo pkill -9 certbot
+
+# Удалите lock-файлы
+sudo rm -f /var/lib/letsencrypt/.certbot.lock
+sudo rm -f /etc/letsencrypt/.certbot.lock
+
+# Попробуйте снова
+letsencrypt-regru --obtain
+```
+
+**Вариант 3: Подождать автоматически**
+Скрипт автоматически:
+1. Обнаруживает запущенные процессы Certbot
+2. Ждёт их завершения (60 секунд)
+3. Пытается очистить lock-файлы
+4. Выдаёт рекомендации по решению проблемы
 
 ### Проблема: Certbot не установлен
 

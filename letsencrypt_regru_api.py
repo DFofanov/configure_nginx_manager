@@ -930,6 +930,94 @@ class LetsEncryptManager:
             self.logger.error("Certbot не установлен!")
             return False
     
+    def check_certbot_running(self) -> bool:
+        """
+        Проверка наличия запущенных процессов certbot
+        
+        Returns:
+            True если процесс certbot запущен
+        """
+        try:
+            # Проверяем через ps
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True
+            )
+            
+            # Ищем процессы certbot (исключая текущий grep)
+            certbot_processes = [
+                line for line in result.stdout.split('\n')
+                if 'certbot' in line.lower() and 'grep' not in line.lower()
+                and str(os.getpid()) not in line  # Исключаем текущий процесс
+            ]
+            
+            if certbot_processes:
+                self.logger.warning("Обнаружены запущенные процессы Certbot:")
+                for proc in certbot_processes:
+                    self.logger.warning(f"  {proc}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"Не удалось проверить запущенные процессы: {e}")
+            return False
+    
+    def cleanup_certbot_locks(self) -> bool:
+        """
+        Очистка lock-файлов certbot
+        
+        Returns:
+            True если lock-файлы были удалены или их не было
+        """
+        lock_files = [
+            "/var/lib/letsencrypt/.certbot.lock",
+            "/etc/letsencrypt/.certbot.lock",
+        ]
+        
+        removed = False
+        for lock_file in lock_files:
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                    self.logger.info(f"Удалён lock-файл: {lock_file}")
+                    removed = True
+                except Exception as e:
+                    self.logger.warning(f"Не удалось удалить lock-файл {lock_file}: {e}")
+        
+        if not removed:
+            self.logger.debug("Lock-файлы certbot не найдены")
+        
+        return True
+    
+    def wait_for_certbot(self, timeout: int = 300) -> bool:
+        """
+        Ожидание завершения работы других процессов certbot
+        
+        Args:
+            timeout: Максимальное время ожидания в секундах
+            
+        Returns:
+            True если certbot больше не запущен
+        """
+        self.logger.info("Ожидание завершения других процессов Certbot...")
+        
+        start_time = time.time()
+        check_interval = 5  # Проверяем каждые 5 секунд
+        
+        while time.time() - start_time < timeout:
+            if not self.check_certbot_running():
+                self.logger.info("Другие процессы Certbot завершены")
+                return True
+            
+            elapsed = int(time.time() - start_time)
+            self.logger.info(f"Ожидание... ({elapsed}/{timeout} секунд)")
+            time.sleep(check_interval)
+        
+        self.logger.error(f"Превышено время ожидания ({timeout} секунд)")
+        return False
+    
     def check_certificate_expiry(self) -> Optional[int]:
         """
         Проверка срока действия сертификата
@@ -1114,6 +1202,26 @@ class LetsEncryptManager:
             self.logger.warning("⚠️  Staging НЕ имеет лимитов запросов (в отличие от production)")
         else:
             self.logger.info("=== Запрос нового SSL сертификата ===")
+        
+        # Проверяем, не запущен ли уже certbot
+        if self.check_certbot_running():
+            self.logger.warning("Обнаружен запущенный процесс Certbot")
+            self.logger.info("Варианты решения:")
+            self.logger.info("  1. Дождитесь завершения текущего процесса")
+            self.logger.info("  2. Остановите процесс вручную: sudo pkill certbot")
+            self.logger.info("  3. Используйте --force-cleanup для очистки lock-файлов")
+            
+            # Пытаемся подождать
+            if not self.wait_for_certbot(timeout=60):
+                self.logger.error("Не удалось дождаться завершения Certbot")
+                self.logger.info("Попытка очистки lock-файлов...")
+                self.cleanup_certbot_locks()
+                
+                # Проверяем снова
+                if self.check_certbot_running():
+                    self.logger.error("Certbot всё ещё запущен. Требуется ручное вмешательство.")
+                    self.logger.error("Выполните: sudo pkill -9 certbot")
+                    return False
         
         # Формируем список доменов
         domains = [self.domain]
@@ -1396,33 +1504,34 @@ def main():
 ════════════════════════════════════════════════════════════════════════════════
 
 Основные команды:
-  %(prog)s -c config.json --check              Проверить срок действия
-  %(prog)s -c config.json --obtain             Получить production сертификат
-  %(prog)s -c config.json --renew              Обновить сертификат
-  %(prog)s -c config.json --auto               Авто-режим (для cron/systemd)
+  letsencrypt-regru --check              Проверить срок действия
+  letsencrypt-regru --obtain             Получить production сертификат
+  letsencrypt-regru --renew              Обновить сертификат
+  letsencrypt-regru --auto               Авто-режим (для cron/systemd)
 
 Команды тестирования:
-  %(prog)s -c config.json --staging            Тестовый Let's Encrypt (БЕЗ лимитов!)
-  %(prog)s -c config.json --test-cert          Самоподписанный (локально)
-  %(prog)s -c config.json --test-api           Проверить API reg.ru
-  %(prog)s -c config.json --test-dns           Проверить DNS записи
+  letsencrypt-regru --staging            Тестовый Let's Encrypt (БЕЗ лимитов!)
+  letsencrypt-regru --test-cert          Самоподписанный (локально)
+  letsencrypt-regru --test-api           Проверить API reg.ru
+  letsencrypt-regru --test-dns           Проверить DNS записи
 
 Отладка:
-  %(prog)s -c config.json --obtain -v          Подробный вывод
+  letsencrypt-regru --obtain -v          Подробный вывод
+  letsencrypt-regru --force-cleanup      Очистить lock-файлы Certbot
 
 ════════════════════════════════════════════════════════════════════════════════
 РЕКОМЕНДУЕМЫЙ WORKFLOW
 ════════════════════════════════════════════════════════════════════════════════
 
 1. Проверка настройки:
-   %(prog)s -c config.json --test-api          ✓ API доступен?
-   %(prog)s -c config.json --test-dns          ✓ DNS работает?
+   letsencrypt-regru --test-api          ✓ API доступен?
+   letsencrypt-regru --test-dns          ✓ DNS работает?
 
 2. Тестирование (неограниченно):
-   %(prog)s -c config.json --staging           ✓ Полный процесс SSL
+   letsencrypt-regru --staging           ✓ Полный процесс SSL
 
 3. Production:
-   %(prog)s -c config.json --obtain            ✓ Боевой сертификат
+   letsencrypt-regru --obtain            ✓ Боевой сертификат
 
 ════════════════════════════════════════════════════════════════════════════════
 СРАВНЕНИЕ РЕЖИМОВ ТЕСТИРОВАНИЯ
@@ -1518,12 +1627,77 @@ def main():
         help="Подробный вывод для диагностики",
         action="store_true"
     )
+    parser.add_argument(
+        "--force-cleanup",
+        help="Принудительная очистка lock-файлов Certbot (если процесс завис)",
+        action="store_true"
+    )
     
     args = parser.parse_args()
     
     # Создание примера конфигурации
     if args.create_config:
         create_sample_config(args.create_config)
+        return 0
+    
+    # Принудительная очистка lock-файлов
+    if args.force_cleanup:
+        print("=" * 80)
+        print("ПРИНУДИТЕЛЬНАЯ ОЧИСТКА LOCK-ФАЙЛОВ CERTBOT")
+        print("=" * 80)
+        
+        lock_files = [
+            "/var/lib/letsencrypt/.certbot.lock",
+            "/etc/letsencrypt/.certbot.lock",
+        ]
+        
+        # Проверяем запущенные процессы
+        try:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True
+            )
+            certbot_processes = [
+                line for line in result.stdout.split('\n')
+                if 'certbot' in line.lower() and 'grep' not in line.lower()
+            ]
+            
+            if certbot_processes:
+                print("\n⚠️  ПРЕДУПРЕЖДЕНИЕ: Обнаружены запущенные процессы Certbot:")
+                for proc in certbot_processes:
+                    print(f"  {proc}")
+                print("\nРекомендуется сначала остановить процессы:")
+                print("  sudo pkill certbot")
+                print("\nПродолжить очистку lock-файлов? (y/N): ", end='')
+                
+                response = input().strip().lower()
+                if response != 'y':
+                    print("Отменено.")
+                    return 0
+        except Exception as e:
+            print(f"Не удалось проверить процессы: {e}")
+        
+        # Удаляем lock-файлы
+        removed_count = 0
+        for lock_file in lock_files:
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                    print(f"✅ Удалён: {lock_file}")
+                    removed_count += 1
+                except Exception as e:
+                    print(f"❌ Ошибка при удалении {lock_file}: {e}")
+            else:
+                print(f"ℹ️  Не найден: {lock_file}")
+        
+        print("\n" + "=" * 80)
+        if removed_count > 0:
+            print(f"✅ Удалено lock-файлов: {removed_count}")
+            print("Теперь можно попробовать запустить Certbot снова.")
+        else:
+            print("ℹ️  Lock-файлы не найдены.")
+        print("=" * 80)
         return 0
     
     # Загрузка конфигурации
