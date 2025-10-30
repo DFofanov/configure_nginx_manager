@@ -501,6 +501,41 @@ class NginxProxyManagerAPI:
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Ошибка при получении списка сертификатов: {e}")
             return []
+
+    def get_certificate_by_id(self, cert_id: int) -> Optional[Dict]:
+        """Возвращает данные сертификата по ID из NPM"""
+        url = f"{self.host}/api/nginx/certificates/{cert_id}"
+        try:
+            self.logger.debug(f"Запрос сертификата ID={cert_id} из NPM...")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            self.logger.warning(f"Не удалось получить сертификат ID {cert_id}: {e}")
+            return None
+
+    def wait_for_certificate_parse(self, cert_id: int, timeout_seconds: int = 30, interval_seconds: float = 2.0) -> Optional[Dict]:
+        """
+        Ожидает, пока NPM распарсит загруженный сертификат и заполнит поля domain_names и expires_on.
+
+        Возвращает актуальные данные сертификата или None по таймауту.
+        """
+        start = time.time()
+        last: Optional[Dict] = None
+        while time.time() - start < timeout_seconds:
+            cert = self.get_certificate_by_id(cert_id)
+            if cert:
+                last = cert
+                domains = cert.get('domain_names', []) or []
+                created_on = cert.get('created_on')
+                expires_on = cert.get('expires_on')
+                self.logger.debug(f"Проверка парсинга NPM: domains={domains}, expires_on={expires_on}, created_on={created_on}")
+                # Готово: домены определены и expires_on отличается от created_on
+                if domains and expires_on and (not created_on or expires_on != created_on):
+                    self.logger.info("NPM завершил парсинг сертификата")
+                    return cert
+            time.sleep(interval_seconds)
+        return last
     
     def find_certificate_by_domain(self, domain: str) -> Optional[Dict]:
         """
@@ -514,12 +549,35 @@ class NginxProxyManagerAPI:
         """
         certificates = self.get_certificates()
         
-        for cert in certificates:
-            domains = cert.get("domain_names", [])
-            if domain in domains or f"*.{domain}" in domains:
-                self.logger.debug(f"Найден существующий сертификат для {domain}")
-                return cert
+        self.logger.debug(f"Поиск сертификата для домена: {domain}")
+        self.logger.debug(f"Всего сертификатов в NPM: {len(certificates)}")
         
+        # Список доменов для поиска (основной домен и wildcard)
+        search_domains = [domain, f"*.{domain}"]
+        
+        for cert in certificates:
+            cert_id = cert.get("id")
+            cert_name = cert.get("nice_name", "Unknown")
+            domains = cert.get("domain_names", [])
+            
+            self.logger.debug(f"Проверка сертификата ID={cert_id}, name='{cert_name}', domains={domains}")
+            
+            # Проверяем точное совпадение доменов
+            for search_domain in search_domains:
+                if search_domain in domains:
+                    self.logger.info(f"✅ Найден существующий сертификат для {domain}")
+                    self.logger.info(f"   ID: {cert_id}, Домены: {', '.join(domains)}")
+                    return cert
+            
+            # Если NPM ещё не распарсил домены (domains == []), проверяем по nice_name
+            # Это предотвращает дублирование сертификатов при первичной загрузке
+            if not domains:
+                if cert_name.strip().lower() == domain.strip().lower() or cert_name.strip().lower() == f"*.{domain.strip().lower()}":
+                    self.logger.info(f"✅ Найден сертификат по имени (домены ещё не распознаны NPM)")
+                    self.logger.info(f"   ID: {cert_id}, Имя: {cert_name}")
+                    return cert
+        
+        self.logger.debug(f"Сертификат для {domain} не найден")
         return None
     
     def upload_certificate(self, domain: str, cert_path: str, key_path: str, 
@@ -543,35 +601,67 @@ class NginxProxyManagerAPI:
         url = f"{self.host}/api/nginx/certificates"
         
         try:
-            # Читаем файлы сертификатов
-            with open(cert_path, 'r') as f:
-                certificate = f.read()
-            
+            # Читаем приватный ключ
             with open(key_path, 'r') as f:
                 certificate_key = f.read()
             
-            # Используем промежуточный сертификат если доступен
-            intermediate_certificate = ""
-            if chain_path and os.path.exists(chain_path):
-                with open(chain_path, 'r') as f:
-                    intermediate_certificate = f.read()
+            # Определяем, какие файлы использовать
+            cert_dir = os.path.dirname(cert_path)
+            cert_only_path = os.path.join(cert_dir, "cert.pem")
+            chain_only_path = os.path.join(cert_dir, "chain.pem")
+            
+            # Используем отдельные файлы cert.pem и chain.pem
+            # NPM лучше работает с разделенными файлами
+            if os.path.exists(cert_only_path) and os.path.exists(chain_only_path):
+                self.logger.info("Загружаем cert.pem и chain.pem отдельно")
+                with open(cert_only_path, 'rb') as f:
+                    certificate = f.read().decode('utf-8')
+                with open(chain_only_path, 'rb') as f:
+                    intermediate_certificate = f.read().decode('utf-8')
+                self.logger.info(f"Загружено: cert.pem ({len(certificate)} байт), chain.pem ({len(intermediate_certificate)} байт)")
+            else:
+                # Fallback: загружаем fullchain целиком
+                self.logger.info("cert.pem/chain.pem не найдены, загружаем fullchain.pem")
+                with open(cert_path, 'rb') as f:
+                    certificate = f.read().decode('utf-8')
+                intermediate_certificate = ""
+                self.logger.info(f"Загружено: fullchain.pem ({len(certificate)} байт)")
+            
+            # Проверяем корректность сертификатов
+            if not certificate.strip().startswith('-----BEGIN CERTIFICATE-----'):
+                self.logger.error("Ошибка: Основной сертификат не начинается с BEGIN CERTIFICATE")
+                return None
+            
+            if intermediate_certificate and not intermediate_certificate.strip().startswith('-----BEGIN CERTIFICATE-----'):
+                self.logger.error("Ошибка: Промежуточный сертификат не начинается с BEGIN CERTIFICATE")
+                return None
+            
+            # Показываем первые строки для диагностики
+            self.logger.debug(f"Основной сертификат начинается с: {certificate[:60]}...")
+            if intermediate_certificate:
+                self.logger.debug(f"Промежуточный сертификат начинается с: {intermediate_certificate[:60]}...")
             
             # NPM Web UI использует multipart/form-data для загрузки custom сертификатов
-            # Эмулируем загрузку через веб-форму
+            # Загружаем cert.pem и chain.pem отдельно
             files = {
                 'certificate': ('cert.pem', certificate, 'application/x-pem-file'),
                 'certificate_key': ('privkey.pem', certificate_key, 'application/x-pem-file'),
             }
             
-            # Добавляем промежуточный сертификат если есть
-            if intermediate_certificate:
+            # Добавляем intermediate_certificate если есть
+            if intermediate_certificate and intermediate_certificate.strip():
                 files['intermediate_certificate'] = ('chain.pem', intermediate_certificate, 'application/x-pem-file')
+                self.logger.info(f"Загружаем cert ({len(certificate)} байт) + chain ({len(intermediate_certificate)} байт) + privkey")
+            else:
+                self.logger.info(f"Загружаем cert ({len(certificate)} байт) + privkey (без chain)")
             
-            # Дополнительные поля формы
+            # Дополнительные поля формы (только разрешенные NPM поля)
             data = {
                 'nice_name': domain,
-                'provider': 'other',  # Обязательное поле: 'letsencrypt' или 'other'
+                'provider': 'other',  # other для custom сертификатов
             }
+            
+            self.logger.debug("NPM будет автоматически извлекать домены и дату истечения из сертификата")
             
             self.logger.debug(f"Uploading certificate as multipart/form-data")
             self.logger.debug(f"Files: {list(files.keys())}")
@@ -587,9 +677,36 @@ class NginxProxyManagerAPI:
             
             if cert_id:
                 self.logger.info(f"Сертификат успешно загружен в NPM (ID: {cert_id})")
+                
+                # Показываем что вернул NPM
+                self.logger.debug(f"Полный ответ NPM: {json.dumps(result, indent=2, ensure_ascii=False)}")
+                
+                expires = result.get("expires_on")
+                if expires:
+                    self.logger.info(f"NPM определил дату истечения: {expires}")
+                else:
+                    self.logger.warning("NPM не вернул дату истечения сертификата!")
+                
+                # Проверяем meta.letsencrypt_email - если есть, значит NPM считает это Let's Encrypt
+                meta = result.get("meta", {})
+                if meta:
+                    self.logger.debug(f"NPM meta: {json.dumps(meta, indent=2, ensure_ascii=False)}")
+                
+                # После загрузки подождём, пока NPM распарсит сертификат (domain_names, expires_on)
+                try:
+                    parsed = self.wait_for_certificate_parse(cert_id, timeout_seconds=12, interval_seconds=1)
+                    if parsed:
+                        self.logger.info(
+                            f"Итоговые данные NPM: домены={parsed.get('domain_names', [])}, истекает={parsed.get('expires_on')}"
+                        )
+                        return parsed
+                except Exception as e:
+                    self.logger.warning(f"Не удалось дождаться парсинга сертификата в NPM: {e}")
+                
                 return result
             else:
                 self.logger.error("Не удалось получить ID созданного сертификата")
+                self.logger.error(f"Ответ NPM: {result}")
                 return None
                 
         except FileNotFoundError as e:
@@ -618,32 +735,42 @@ class NginxProxyManagerAPI:
         url = f"{self.host}/api/nginx/certificates/{cert_id}"
         
         try:
-            # Читаем файлы сертификатов
-            with open(cert_path, 'r') as f:
-                certificate = f.read()
-            
+            # Читаем приватный ключ
             with open(key_path, 'r') as f:
                 certificate_key = f.read()
             
-            # Используем промежуточный сертификат если доступен
-            intermediate_certificate = ""
-            if chain_path and os.path.exists(chain_path):
-                with open(chain_path, 'r') as f:
-                    intermediate_certificate = f.read()
+            # Определяем, какие файлы использовать
+            cert_dir = os.path.dirname(cert_path)
+            cert_only_path = os.path.join(cert_dir, "cert.pem")
+            chain_only_path = os.path.join(cert_dir, "chain.pem")
             
-            # NPM Web UI использует multipart/form-data для обновления
-            files = {
-                'certificate': ('cert.pem', certificate, 'application/x-pem-file'),
-                'certificate_key': ('privkey.pem', certificate_key, 'application/x-pem-file'),
-            }
-            
-            # Добавляем промежуточный сертификат если есть
-            if intermediate_certificate:
-                files['intermediate_certificate'] = ('chain.pem', intermediate_certificate, 'application/x-pem-file')
+            # Используем cert.pem и chain.pem при обновлении, при отсутствии – fullchain
+            files: Dict[str, Tuple[str, str, str]]
+            if os.path.exists(cert_only_path) and os.path.exists(chain_only_path):
+                self.logger.info("Обновление: используем cert.pem и chain.pem")
+                with open(cert_only_path, 'rb') as f:
+                    certificate = f.read().decode('utf-8')
+                with open(chain_only_path, 'rb') as f:
+                    intermediate_certificate = f.read().decode('utf-8')
+                self.logger.debug(f"Загружено: cert.pem ({len(certificate)} байт), chain.pem ({len(intermediate_certificate)} байт)")
+                files = {
+                    'certificate': ('cert.pem', certificate, 'application/x-pem-file'),
+                    'certificate_key': ('privkey.pem', certificate_key, 'application/x-pem-file'),
+                    'intermediate_certificate': ('chain.pem', intermediate_certificate, 'application/x-pem-file'),
+                }
+            else:
+                self.logger.info("Обновление: cert/chain не найдены, используем fullchain.pem")
+                with open(cert_path, 'rb') as f:
+                    certificate = f.read().decode('utf-8')
+                self.logger.debug(f"Загружено: fullchain.pem ({len(certificate)} байт)")
+                files = {
+                    'certificate': ('fullchain.pem', certificate, 'application/x-pem-file'),
+                    'certificate_key': ('privkey.pem', certificate_key, 'application/x-pem-file'),
+                }
             
             # Дополнительные поля формы
             data = {
-                'provider': 'other',  # Обязательное поле
+                'provider': 'other',  # other для custom сертификатов
             }
             
             self.logger.info(f"Обновление сертификата ID {cert_id} в NPM...")
@@ -651,6 +778,15 @@ class NginxProxyManagerAPI:
             response.raise_for_status()
             
             self.logger.info("Сертификат успешно обновлен в NPM")
+            # Дождаться, пока NPM обновит метаданные
+            try:
+                parsed = self.wait_for_certificate_parse(cert_id, timeout_seconds=12, interval_seconds=1)
+                if parsed:
+                    self.logger.info(
+                        f"Итоговые данные NPM после обновления: домены={parsed.get('domain_names', [])}, истекает={parsed.get('expires_on')}"
+                    )
+            except Exception as e:
+                self.logger.warning(f"Не удалось дождаться обновления метаданных сертификата: {e}")
             return True
             
         except FileNotFoundError as e:
@@ -658,6 +794,32 @@ class NginxProxyManagerAPI:
             return False
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Ошибка при обновлении сертификата в NPM: {e}")
+            if hasattr(e.response, 'text'):
+                self.logger.error(f"Ответ сервера: {e.response.text}")
+            return False
+    
+    def delete_certificate(self, cert_id: int) -> bool:
+        """
+        Удаление сертификата из NPM
+        
+        Args:
+            cert_id: ID сертификата в NPM
+            
+        Returns:
+            True если успешно
+        """
+        url = f"{self.host}/api/nginx/certificates/{cert_id}"
+        
+        try:
+            self.logger.info(f"Удаление сертификата ID {cert_id} из NPM...")
+            response = self.session.delete(url, timeout=10)
+            response.raise_for_status()
+            
+            self.logger.info(f"✅ Сертификат ID {cert_id} успешно удален из NPM")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Ошибка при удалении сертификата: {e}")
             if hasattr(e.response, 'text'):
                 self.logger.error(f"Ответ сервера: {e.response.text}")
             return False
@@ -1017,6 +1179,42 @@ class LetsEncryptManager:
         
         self.logger.error(f"Превышено время ожидания ({timeout} секунд)")
         return False
+    
+    def is_staging_certificate(self) -> bool:
+        """
+        Проверка, является ли сертификат staging (тестовым)
+        
+        Returns:
+            True если сертификат staging
+        """
+        cert_file = os.path.join(self.cert_dir, "cert.pem")
+        
+        if not os.path.exists(cert_file):
+            return False
+        
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.backends import default_backend
+            
+            with open(cert_file, "rb") as f:
+                cert_data = f.read()
+                cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+            
+            # Проверяем issuer (издателя сертификата)
+            issuer = cert.issuer.rfc4514_string()
+            
+            # Staging сертификаты Let's Encrypt содержат "Fake LE" или "Staging" в issuer
+            is_staging = (
+                "fake" in issuer.lower() or 
+                "staging" in issuer.lower() or
+                "test" in issuer.lower()
+            )
+            
+            return is_staging
+            
+        except Exception as e:
+            self.logger.debug(f"Не удалось проверить тип сертификата: {e}")
+            return False
     
     def check_certificate_expiry(self) -> Optional[int]:
         """
@@ -1618,10 +1816,14 @@ def main():
 ================================================================================
 
 Основные команды:
-  letsencrypt-regru --check              Проверить срок действия
+  letsencrypt-regru --check              Проверить срок действия (определяет staging/production)
+  letsencrypt-regru --info               Показать полную информацию о сертификате
   letsencrypt-regru --obtain             Получить production сертификат
   letsencrypt-regru --renew              Обновить сертификат
   letsencrypt-regru --auto               Авто-режим (для cron/systemd)
+  letsencrypt-regru --upload-npm DOMAIN  Загрузить сертификат в Nginx Proxy Manager
+  letsencrypt-regru --list-npm           Показать все сертификаты в NPM (с дубликатами)
+  letsencrypt-regru --delete-npm ID      Удалить сертификат из NPM по ID
 
 Команды тестирования:
   letsencrypt-regru --staging            Тестовый Let's Encrypt (БЕЗ лимитов!)
@@ -1632,6 +1834,11 @@ def main():
 Отладка:
   letsencrypt-regru --obtain -v          Подробный вывод
   letsencrypt-regru --force-cleanup      Очистить lock-файлы Certbot
+
+Работа с NPM:
+  letsencrypt-regru --list-npm                    Показать все сертификаты
+  letsencrypt-regru --upload-npm example.com      Загрузить сертификат для example.com
+  letsencrypt-regru --delete-npm 5                Удалить сертификат ID 5
 
 ================================================================================
 РЕКОМЕНДУЕМЫЙ WORKFLOW
@@ -1646,6 +1853,7 @@ def main():
 
 3. Production:
    letsencrypt-regru --obtain            [+] Боевой сертификат
+   letsencrypt-regru --upload-npm DOMAIN [+] Загрузить в NPM (если не автоматически)
 
 ================================================================================
 СРАВНЕНИЕ РЕЖИМОВ ТЕСТИРОВАНИЯ
@@ -1680,7 +1888,12 @@ def main():
     main_group = parser.add_argument_group('Основные команды')
     main_group.add_argument(
         "--check",
-        help="Проверить срок действия сертификата",
+        help="Проверить срок действия сертификата (определяет staging/production)",
+        action="store_true"
+    )
+    main_group.add_argument(
+        "--info",
+        help="Показать полную информацию о сертификате",
         action="store_true"
     )
     main_group.add_argument(
@@ -1697,6 +1910,23 @@ def main():
         "--auto",
         help="Автоматический режим: проверка и обновление при необходимости (для cron/systemd)",
         action="store_true"
+    )
+    main_group.add_argument(
+        "--upload-npm",
+        help="Загрузить существующий сертификат в Nginx Proxy Manager",
+        metavar="DOMAIN",
+        type=str
+    )
+    main_group.add_argument(
+        "--list-npm",
+        help="Показать все сертификаты в Nginx Proxy Manager",
+        action="store_true"
+    )
+    main_group.add_argument(
+        "--delete-npm",
+        help="Удалить сертификат из Nginx Proxy Manager по ID",
+        metavar="CERT_ID",
+        type=int
     )
     
     # Команды тестирования
@@ -2148,24 +2378,54 @@ def main():
         logger.info("")
     
     # Выполнение действий
-    if args.check:
+    if args.info:
+        # Показать полную информацию о сертификате
+        days_left = manager.check_certificate_expiry()
+        
+        if days_left is None:
+            logger.error("Сертификат не найден")
+            return 1
+        
+        # Проверяем тип сертификата
+        is_staging = manager.is_staging_certificate()
+        
+        logger.info("")
+        logger.info("=" * 80)
+        if is_staging:
+            logger.warning("ТИП СЕРТИФИКАТА: STAGING (ТЕСТОВЫЙ)")
+            logger.warning("=" * 80)
+            logger.warning("⚠️  Это тестовый сертификат Let's Encrypt")
+            logger.warning("   • Издатель: Fake LE Intermediate X1 (staging)")
+            logger.warning("   • Браузеры НЕ доверяют")
+            logger.warning("   • НЕ загружен в Nginx Proxy Manager")
+            logger.warning("   • БЕЗ лимитов на получение")
+        else:
+            logger.info("ТИП СЕРТИФИКАТА: PRODUCTION (БОЕВОЙ)")
+            logger.info("=" * 80)
+            logger.info("✅ Это настоящий сертификат Let's Encrypt")
+            logger.info("   • Издатель: Let's Encrypt Authority")
+            logger.info("   • Браузеры доверяют")
+            logger.info("   • Загружен в Nginx Proxy Manager")
+            logger.info("   • Лимит: 5 сертификатов/неделю")
+        
+        logger.info("")
+        manager.display_certificate_info()
+        
+        if is_staging:
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("🚀 Для получения PRODUCTION сертификата:")
+            logger.info("   sudo letsencrypt-regru --obtain")
+            logger.info("=" * 80)
+        
+        return 0
+    
+    elif args.check:
         # Только проверка срока действия
         days_left = manager.check_certificate_expiry()
         
         # Проверяем, является ли сертификат staging
-        cert_file = os.path.join(config["cert_dir"], config["domain"], "cert.pem")
-        is_staging = False
-        
-        if os.path.exists(cert_file):
-            try:
-                result = subprocess.run(
-                    ["openssl", "x509", "-in", cert_file, "-text", "-noout"],
-                    capture_output=True,
-                    text=True
-                )
-                is_staging = "fake" in result.stdout.lower() or "staging" in result.stdout.lower()
-            except:
-                pass
+        is_staging = manager.is_staging_certificate()
         
         if days_left is None:
             logger.info("Сертификат не найден. Требуется создание нового.")
@@ -2296,6 +2556,332 @@ def main():
         else:
             logger.error("Не удалось обновить сертификат")
             return 1
+    
+    elif args.list_npm:
+        # Показать все сертификаты в NPM
+        logger.info("=" * 80)
+        logger.info("СПИСОК СЕРТИФИКАТОВ В NGINX PROXY MANAGER")
+        logger.info("=" * 80)
+        
+        if not config.get("npm_enabled", False):
+            logger.error("NPM не настроен в конфигурации!")
+            return 1
+        
+        npm_api = NginxProxyManagerAPI(
+            config["npm_host"],
+            config["npm_email"],
+            config["npm_password"],
+            logger
+        )
+        
+        if not npm_api.login():
+            logger.error("Не удалось подключиться к NPM")
+            return 1
+        
+        certificates = npm_api.get_certificates()
+        
+        if not certificates:
+            logger.info("В NPM нет сертификатов")
+            return 0
+        
+        logger.info(f"Всего сертификатов: {len(certificates)}")
+        logger.info("")
+        
+        # Группируем дубликаты по domain_names
+        from collections import defaultdict
+        duplicates = defaultdict(list)
+        
+        for cert in certificates:
+            domains_key = tuple(sorted(cert.get("domain_names", [])))
+            duplicates[domains_key].append(cert)
+        
+        # Выводим список
+        for domains_key, certs in sorted(duplicates.items()):
+            domains_str = ", ".join(domains_key)
+            
+            if len(certs) > 1:
+                logger.warning(f"⚠️  ДУБЛИКАТЫ для {domains_str}:")
+                for cert in certs:
+                    cert_id = cert.get("id")
+                    created = cert.get("created_on", "Unknown")
+                    expires = cert.get("expires_on", "Unknown")
+                    provider = cert.get("provider", "Unknown")
+                    logger.warning(f"   ID {cert_id}: создан {created}, истекает {expires}, тип {provider}")
+            else:
+                cert = certs[0]
+                cert_id = cert.get("id")
+                created = cert.get("created_on", "Unknown")
+                expires = cert.get("expires_on", "Unknown")
+                provider = cert.get("provider", "Unknown")
+                logger.info(f"ID {cert_id}: {domains_str}")
+                logger.info(f"         Создан: {created}, Истекает: {expires}, Тип: {provider}")
+            logger.info("")
+        
+        # Показываем рекомендации по удалению дубликатов
+        has_duplicates = any(len(certs) > 1 for certs in duplicates.values())
+        if has_duplicates:
+            logger.warning("=" * 80)
+            logger.warning("Обнаружены дубликаты сертификатов!")
+            logger.warning("Для удаления дубликата используйте:")
+            logger.warning("  letsencrypt-regru --delete-npm CERT_ID")
+            logger.warning("=" * 80)
+        
+        return 0
+    
+    elif args.delete_npm:
+        # Удалить сертификат из NPM
+        cert_id = args.delete_npm
+        
+        logger.info("=" * 80)
+        logger.info(f"УДАЛЕНИЕ СЕРТИФИКАТА ID {cert_id} ИЗ NPM")
+        logger.info("=" * 80)
+        
+        if not config.get("npm_enabled", False):
+            logger.error("NPM не настроен в конфигурации!")
+            return 1
+        
+        npm_api = NginxProxyManagerAPI(
+            config["npm_host"],
+            config["npm_email"],
+            config["npm_password"],
+            logger
+        )
+        
+        if not npm_api.login():
+            logger.error("Не удалось подключиться к NPM")
+            return 1
+        
+        # Получаем информацию о сертификате
+        certificates = npm_api.get_certificates()
+        cert_to_delete = None
+        
+        for cert in certificates:
+            if cert.get("id") == cert_id:
+                cert_to_delete = cert
+                break
+        
+        if not cert_to_delete:
+            logger.error(f"Сертификат с ID {cert_id} не найден")
+            logger.info("")
+            logger.info("Доступные сертификаты:")
+            for cert in certificates:
+                logger.info(f"  ID {cert.get('id')}: {', '.join(cert.get('domain_names', []))}")
+            return 1
+        
+        # Показываем информацию о сертификате
+        domains = cert_to_delete.get("domain_names", [])
+        logger.info(f"Сертификат: {', '.join(domains)}")
+        logger.info(f"Создан: {cert_to_delete.get('created_on', 'Unknown')}")
+        logger.info("")
+        logger.warning("⚠️  ВНИМАНИЕ: Удаление сертификата нельзя отменить!")
+        logger.warning("Продолжить удаление? (y/N): ")
+        
+        try:
+            response = input().strip().lower()
+            if response != 'y':
+                logger.info("Отменено.")
+                return 0
+        except:
+            logger.error("Требуется интерактивное подтверждение")
+            return 1
+        
+        if npm_api.delete_certificate(cert_id):
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("✅ СЕРТИФИКАТ УСПЕШНО УДАЛЕН")
+            logger.info("=" * 80)
+            return 0
+        else:
+            logger.error("Не удалось удалить сертификат")
+            return 1
+    
+    elif args.upload_npm:
+        # Загрузка существующего сертификата в NPM
+        domain = args.upload_npm
+        
+        logger.info("=" * 80)
+        logger.info(f"ЗАГРУЗКА СЕРТИФИКАТА В NGINX PROXY MANAGER")
+        logger.info("=" * 80)
+        logger.info(f"Домен: {domain}")
+        logger.info("")
+        
+        # Проверяем настройки NPM
+        if not config.get("npm_enabled", False):
+            logger.error("NPM не настроен в конфигурации!")
+            logger.error("Проверьте параметры npm_enabled, npm_host, npm_email, npm_password")
+            return 1
+        
+        # Определяем пути к сертификату
+        cert_dir = os.path.join(config["cert_dir"], domain)
+        cert_path = os.path.join(cert_dir, "fullchain.pem")
+        key_path = os.path.join(cert_dir, "privkey.pem")
+        
+        # Проверяем существование файлов
+        if not os.path.exists(cert_path):
+            logger.error(f"Сертификат не найден: {cert_path}")
+            logger.error("")
+            logger.error("Доступные домены в /etc/letsencrypt/live/:")
+            try:
+                live_dir = config["cert_dir"]
+                if os.path.exists(live_dir):
+                    for item in os.listdir(live_dir):
+                        item_path = os.path.join(live_dir, item)
+                        if os.path.isdir(item_path):
+                            logger.error(f"  - {item}")
+            except:
+                pass
+            return 1
+        
+        if not os.path.exists(key_path):
+            logger.error(f"Приватный ключ не найден: {key_path}")
+            return 1
+        
+        logger.info(f"✅ Найден сертификат: {cert_path}")
+        logger.info(f"✅ Найден приватный ключ: {key_path}")
+        
+        # Анализируем содержимое сертификата
+        try:
+            with open(cert_path, 'r') as f:
+                cert_content = f.read()
+            cert_count = cert_content.count('-----BEGIN CERTIFICATE-----')
+            logger.info(f"   Сертификатов в файле: {cert_count}")
+            if cert_count > 1:
+                logger.info(f"   (1 конечный + {cert_count - 1} промежуточных)")
+        except:
+            pass
+        
+        logger.info("")
+        
+        # Проверяем тип сертификата
+        try:
+            result = subprocess.run(
+                ["openssl", "x509", "-in", cert_path, "-text", "-noout"],
+                capture_output=True,
+                text=True
+            )
+            is_staging = "fake" in result.stdout.lower() or "staging" in result.stdout.lower()
+            
+            # Показываем дату истечения
+            for line in result.stdout.split('\n'):
+                if 'Not After' in line:
+                    logger.info(f"   Истекает: {line.strip()}")
+                    break
+            
+            if is_staging:
+                logger.warning("⚠️  ВНИМАНИЕ: Это STAGING (тестовый) сертификат!")
+                logger.warning("   Браузеры не будут доверять этому сертификату")
+                logger.warning("")
+                logger.warning("Продолжить загрузку в NPM? (y/N): ")
+                
+                try:
+                    response = input().strip().lower()
+                    if response != 'y':
+                        logger.info("Отменено.")
+                        return 0
+                except:
+                    logger.warning("Пропускаем подтверждение (неинтерактивный режим)")
+        except:
+            pass
+        
+        # Подключаемся к NPM
+        logger.info("Подключение к Nginx Proxy Manager...")
+        npm_api = NginxProxyManagerAPI(
+            config["npm_host"],
+            config["npm_email"],
+            config["npm_password"],
+            logger
+        )
+        
+        if not npm_api.login():
+            logger.error("Не удалось подключиться к NPM")
+            logger.error("Проверьте настройки npm_host, npm_email, npm_password в конфигурации")
+            return 1
+        
+        logger.info("✅ Подключение к NPM успешно")
+        logger.info("")
+        
+        # Получаем список всех сертификатов для диагностики
+        all_certs = npm_api.get_certificates()
+        logger.info(f"Всего сертификатов в NPM: {len(all_certs)}")
+        
+        if args.verbose and all_certs:
+            logger.info("")
+            logger.info("Список всех сертификатов в NPM:")
+            for cert in all_certs:
+                cert_id = cert.get("id")
+                cert_name = cert.get("nice_name", "Unknown")
+                domains = cert.get("domain_names", [])
+                logger.info(f"  ID {cert_id}: '{cert_name}' -> {', '.join(domains)}")
+            logger.info("")
+        
+        # Проверяем существующий сертификат
+        logger.info(f"Поиск сертификата для домена '{domain}'...")
+        existing = npm_api.find_certificate_by_domain(domain)
+        
+        if existing:
+            cert_id = existing.get("id")
+            logger.info(f"Найден существующий сертификат (ID: {cert_id})")
+            logger.info("Обновление сертификата...")
+            
+            if npm_api.update_certificate(cert_id, cert_path, key_path):
+                logger.info("")
+                logger.info("=" * 80)
+                logger.info("✅ СЕРТИФИКАТ УСПЕШНО ОБНОВЛЕН В NPM")
+                logger.info("=" * 80)
+                logger.info(f"ID сертификата: {cert_id}")
+                logger.info(f"Домен: {domain}")
+                logger.info("")
+                
+                # Проверяем результат
+                updated_certs = npm_api.get_certificates()
+                for cert in updated_certs:
+                    if cert.get("id") == cert_id:
+                        expires = cert.get("expires_on", "Unknown")
+                        logger.info(f"Статус в NPM: {cert.get('provider', 'Unknown')}")
+                        logger.info(f"Истекает: {expires}")
+                        break
+                
+                return 0
+            else:
+                logger.error("Не удалось обновить сертификат в NPM")
+                return 1
+        else:
+            logger.info("Существующий сертификат не найден")
+            logger.info("Создание нового сертификата в NPM...")
+            
+            result = npm_api.upload_certificate(domain, cert_path, key_path)
+            if result:
+                cert_id = result.get("id")
+                logger.info("")
+                logger.info("=" * 80)
+                logger.info("✅ СЕРТИФИКАТ УСПЕШНО ЗАГРУЖЕН В NPM")
+                logger.info("=" * 80)
+                logger.info(f"ID сертификата: {cert_id}")
+                logger.info(f"Домен: {domain}")
+                logger.info("")
+                
+                # Проверяем результат (повторно получаем из NPM, если возможно)
+                try:
+                    final = npm_api.get_certificate_by_id(cert_id)
+                    if final:
+                        provider = final.get('provider', result.get('provider', 'Unknown'))
+                        expires = final.get('expires_on', result.get('expires_on', 'Unknown'))
+                        domains = final.get('domain_names', [])
+                        logger.info(f"Статус в NPM: {provider}")
+                        logger.info(f"Домены: {', '.join(domains) if domains else '[пока не распознаны]'}")
+                        logger.info(f"Истекает: {expires}")
+                    else:
+                        logger.info(f"Статус в NPM: {result.get('provider', 'Unknown')}")
+                        logger.info(f"Истекает: {result.get('expires_on', 'Unknown')}")
+                except Exception:
+                    logger.info(f"Статус в NPM: {result.get('provider', 'Unknown')}")
+                    logger.info(f"Истекает: {result.get('expires_on', 'Unknown')}")
+                logger.info("")
+                logger.info("Теперь вы можете использовать этот сертификат в Proxy Hosts")
+                return 0
+            else:
+                logger.error("Не удалось загрузить сертификат в NPM")
+                return 1
     
     else:
         # Автоматический режим: проверка и обновление при необходимости
