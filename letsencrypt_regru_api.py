@@ -1034,12 +1034,21 @@ class LetsEncryptManager:
         try:
             from cryptography import x509
             from cryptography.hazmat.backends import default_backend
+            import warnings
             
             with open(cert_file, "rb") as f:
                 cert_data = f.read()
                 cert = x509.load_pem_x509_certificate(cert_data, default_backend())
             
-            expiry_date = cert.not_valid_after
+            # Используем not_valid_after_utc для избежания предупреждения
+            try:
+                expiry_date = cert.not_valid_after_utc.replace(tzinfo=None)
+            except AttributeError:
+                # Для старых версий cryptography
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    expiry_date = cert.not_valid_after
+            
             days_left = (expiry_date - datetime.now()).days
             
             self.logger.info(f"Сертификат истекает: {expiry_date.strftime('%d.%m.%Y %H:%M:%S')}")
@@ -1463,6 +1472,15 @@ class LetsEncryptManager:
                 check=True
             )
             
+            # Проверяем, является ли сертификат staging
+            is_staging = "fake" in result.stdout.lower() or "staging" in result.stdout.lower()
+            
+            if is_staging:
+                self.logger.warning("⚠️  ЭТО STAGING (ТЕСТОВЫЙ) СЕРТИФИКАТ!")
+                self.logger.warning("   Браузеры не будут доверять этому сертификату")
+                self.logger.warning("   Не используйте на production сайтах")
+                self.logger.warning("")
+            
             # Выводим только основную информацию
             for line in result.stdout.split("\n"):
                 if any(keyword in line for keyword in ["Subject:", "Issuer:", "Not Before", "Not After", "DNS:"]):
@@ -1474,6 +1492,12 @@ class LetsEncryptManager:
             self.logger.info(f"  Приватный ключ: {self.cert_dir}/privkey.pem")
             self.logger.info(f"  Цепочка: {self.cert_dir}/chain.pem")
             self.logger.info(f"  Полная цепочка: {self.cert_dir}/fullchain.pem")
+            
+            if is_staging:
+                self.logger.info("")
+                self.logger.info("🚀 Для получения PRODUCTION сертификата выполните:")
+                self.logger.info("   sudo letsencrypt-regru --obtain")
+            
             self.logger.info("=" * 60)
             
         except Exception as e:
@@ -2127,14 +2151,52 @@ def main():
     if args.check:
         # Только проверка срока действия
         days_left = manager.check_certificate_expiry()
+        
+        # Проверяем, является ли сертификат staging
+        cert_file = os.path.join(config["cert_dir"], config["domain"], "cert.pem")
+        is_staging = False
+        
+        if os.path.exists(cert_file):
+            try:
+                result = subprocess.run(
+                    ["openssl", "x509", "-in", cert_file, "-text", "-noout"],
+                    capture_output=True,
+                    text=True
+                )
+                is_staging = "fake" in result.stdout.lower() or "staging" in result.stdout.lower()
+            except:
+                pass
+        
         if days_left is None:
             logger.info("Сертификат не найден. Требуется создание нового.")
+            logger.info("")
+            logger.info("Для получения production сертификата выполните:")
+            logger.info("  sudo letsencrypt-regru --obtain")
             return 2
+        elif is_staging:
+            logger.warning("")
+            logger.warning("=" * 80)
+            logger.warning("⚠️  УСТАНОВЛЕН STAGING (ТЕСТОВЫЙ) СЕРТИФИКАТ!")
+            logger.warning("=" * 80)
+            logger.warning("Это тестовый сертификат Let's Encrypt из staging окружения")
+            logger.warning("Браузеры НЕ будут доверять этому сертификату")
+            logger.warning("Сертификат НЕ загружен в Nginx Proxy Manager")
+            logger.warning("")
+            logger.warning("🚀 Для получения PRODUCTION сертификата выполните:")
+            logger.warning("   sudo letsencrypt-regru --obtain")
+            logger.warning("=" * 80)
+            return 3
         elif days_left < 30:
             logger.warning(f"Сертификат истекает через {days_left} дней. Требуется обновление!")
+            logger.info("")
+            logger.info("Для обновления сертификата выполните:")
+            logger.info("  sudo letsencrypt-regru --renew")
             return 1
         else:
-            logger.info(f"Сертификат действителен ({days_left} дней)")
+            logger.info(f"✅ Сертификат действителен ({days_left} дней)")
+            logger.info("")
+            logger.info("Сертификат в норме. Следующая проверка через:")
+            logger.info(f"  {days_left - 30} дней (за 30 дней до истечения)")
             return 0
     
     elif args.staging:
