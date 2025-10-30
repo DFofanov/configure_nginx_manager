@@ -1085,21 +1085,40 @@ class LetsEncryptManager:
                 self.logger.error("Не удалось добавить TXT запись")
                 return False
             
-            self.logger.info("✅ TXT запись успешно добавлена")
+            self.logger.info("✅ TXT запись успешно добавлена в API reg.ru")
             
             # Ждем распространения DNS
             wait_time = self.config.get("dns_propagation_wait", 60)
-            self.logger.info(f"Ожидание распространения DNS ({wait_time} секунд)...")
-            time.sleep(wait_time)
+            self.logger.info("")
+            self.logger.info("⏳ Ожидание распространения DNS...")
+            self.logger.info(f"   Время ожидания: {wait_time} секунд")
+            self.logger.info(f"   TXT запись: _acme-challenge.{base_domain}")
+            self.logger.info("")
+            
+            # Показываем прогресс ожидания
+            for i in range(wait_time):
+                if i % 10 == 0:
+                    elapsed_pct = int((i / wait_time) * 100)
+                    self.logger.info(f"   ⏱️  Прошло: {i}/{wait_time} сек ({elapsed_pct}%)")
+                time.sleep(1)
+            
+            self.logger.info(f"   ✅ Ожидание завершено ({wait_time} секунд)")
+            self.logger.info("")
             
             # Проверяем DNS запись (используем base_domain для проверки)
-            self.logger.info("Проверка распространения DNS...")
+            self.logger.info("🔍 Проверка распространения DNS через публичные серверы...")
             if self.verify_dns_record_external(base_domain, subdomain, validation_token):
-                self.logger.info("✅ DNS запись подтверждена через публичные DNS")
+                self.logger.info("✅ DNS запись подтверждена через публичные DNS серверы")
+                self.logger.info("   Certbot сможет пройти валидацию")
                 return True
             else:
-                self.logger.warning("⚠️ DNS запись не обнаружена через публичные DNS, но продолжаем...")
-                self.logger.warning("Let's Encrypt может использовать свои DNS серверы")
+                self.logger.warning("⚠️  DNS запись НЕ обнаружена через публичные DNS, но продолжаем...")
+                self.logger.warning("   Возможные причины:")
+                self.logger.warning("   • DNS серверы ещё не обновились (требуется больше времени)")
+                self.logger.warning("   • Let's Encrypt использует свои DNS серверы")
+                self.logger.warning("   • API reg.ru обновляет записи с задержкой")
+                self.logger.warning("")
+                self.logger.warning("   Certbot будет продолжать попытки валидации...")
                 return True
                 
         except Exception as e:
@@ -1146,7 +1165,10 @@ class LetsEncryptManager:
         attempts = self.config.get("dns_check_attempts", 10)
         interval = self.config.get("dns_check_interval", 10)
         
-        self.logger.info(f"Проверка DNS записи для {full_domain}")
+        self.logger.info(f"   Проверяем: {full_domain}")
+        self.logger.info(f"   Ожидаемое значение: {expected_value[:30]}...")
+        self.logger.info(f"   Попыток: {attempts}, интервал: {interval} сек")
+        self.logger.info("")
         
         for attempt in range(attempts):
             try:
@@ -1159,16 +1181,22 @@ class LetsEncryptManager:
                 )
                 
                 if expected_value in result.stdout:
-                    self.logger.info(f"DNS запись найдена (попытка {attempt + 1})")
+                    self.logger.info(f"   ✅ Попытка {attempt + 1}/{attempts}: DNS запись НАЙДЕНА!")
+                    # Показываем найденную запись
+                    for line in result.stdout.split('\n'):
+                        if 'text =' in line.lower() or expected_value[:20] in line:
+                            self.logger.info(f"      {line.strip()}")
                     return True
+                else:
+                    self.logger.info(f"   ⏳ Попытка {attempt + 1}/{attempts}: DNS запись не найдена, ждём...")
                     
             except Exception as e:
-                self.logger.debug(f"Попытка {attempt + 1}: DNS запись не найдена - {e}")
+                self.logger.info(f"   ⚠️  Попытка {attempt + 1}/{attempts}: Ошибка nslookup - {e}")
             
             if attempt < attempts - 1:
                 time.sleep(interval)
         
-        self.logger.warning("DNS запись не найдена после всех попыток")
+        self.logger.warning(f"   ❌ DNS запись не найдена после {attempts} попыток")
         return False
     
     def verify_dns_record(self, subdomain: str, expected_value: str) -> bool:
@@ -1303,13 +1331,75 @@ class LetsEncryptManager:
                 check=True
             )
             
-            self.logger.info("Сертификат успешно получен!")
-            self.logger.debug(result.stdout)
+            self.logger.info("=" * 80)
+            self.logger.info("✅ СЕРТИФИКАТ УСПЕШНО ПОЛУЧЕН!")
+            self.logger.info("=" * 80)
+            
+            # Выводим stdout certbot (может содержать полезную информацию)
+            if result.stdout:
+                self.logger.info("Вывод Certbot:")
+                for line in result.stdout.split('\n'):
+                    if line.strip():
+                        self.logger.info(f"  {line}")
+            
+            # Информация о местоположении сертификата
+            if staging:
+                self.logger.info("")
+                self.logger.info("⚠️  Это STAGING сертификат - не используйте на production!")
+                self.logger.info("   Для получения production сертификата используйте: letsencrypt-regru --obtain")
+            
             return True
             
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"Ошибка при получении сертификата: {e}")
-            self.logger.error(e.stderr)
+            self.logger.error("=" * 80)
+            self.logger.error("❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СЕРТИФИКАТА")
+            self.logger.error("=" * 80)
+            self.logger.error(f"Код возврата: {e.returncode}")
+            
+            # Выводим stderr (основные ошибки)
+            if e.stderr:
+                self.logger.error("")
+                self.logger.error("Сообщения об ошибках:")
+                for line in e.stderr.split('\n'):
+                    if line.strip():
+                        self.logger.error(f"  {line}")
+            
+            # Выводим stdout (может содержать дополнительную информацию)
+            if e.stdout:
+                self.logger.error("")
+                self.logger.error("Дополнительная информация:")
+                for line in e.stdout.split('\n'):
+                    if line.strip():
+                        self.logger.error(f"  {line}")
+            
+            # Рекомендации по устранению проблем
+            self.logger.error("")
+            self.logger.error("=" * 80)
+            self.logger.error("РЕКОМЕНДАЦИИ ПО УСТРАНЕНИЮ ПРОБЛЕМ:")
+            self.logger.error("=" * 80)
+            self.logger.error("1. Проверьте детальный лог Certbot:")
+            self.logger.error("   tail -100 /var/log/letsencrypt/letsencrypt.log")
+            self.logger.error("")
+            self.logger.error("2. Проверьте логи скрипта:")
+            self.logger.error("   tail -100 /var/log/letsencrypt-regru/letsencrypt_regru.log")
+            self.logger.error("")
+            self.logger.error("3. Убедитесь, что DNS записи создаются:")
+            self.logger.error("   letsencrypt-regru --test-dns")
+            self.logger.error("")
+            self.logger.error("4. Проверьте доступ к API reg.ru:")
+            self.logger.error("   letsencrypt-regru --test-api")
+            self.logger.error("")
+            self.logger.error("5. Запустите с подробным выводом:")
+            self.logger.error("   letsencrypt-regru --staging -v")
+            self.logger.error("")
+            self.logger.error("6. Убедитесь что ваш IP в белом списке API reg.ru:")
+            self.logger.error("   https://www.reg.ru/user/account/#/settings/api/")
+            self.logger.error("")
+            self.logger.error("7. Проверьте DNS записи вручную:")
+            self.logger.error("   nslookup -type=TXT _acme-challenge.{domain}")
+            self.logger.error("   dig TXT _acme-challenge.{domain}")
+            self.logger.error("=" * 80)
+            
             return False
         finally:
             # Удаляем временные wrapper скрипты
@@ -1499,9 +1589,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Автоматическое управление SSL сертификатами Let's Encrypt через API reg.ru",
         epilog="""
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 ПРИМЕРЫ ИСПОЛЬЗОВАНИЯ
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 
 Основные команды:
   letsencrypt-regru --check              Проверить срок действия
@@ -1519,31 +1609,31 @@ def main():
   letsencrypt-regru --obtain -v          Подробный вывод
   letsencrypt-regru --force-cleanup      Очистить lock-файлы Certbot
 
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 РЕКОМЕНДУЕМЫЙ WORKFLOW
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 
 1. Проверка настройки:
-   letsencrypt-regru --test-api          ✓ API доступен?
-   letsencrypt-regru --test-dns          ✓ DNS работает?
+   letsencrypt-regru --test-api          [+] API доступен?
+   letsencrypt-regru --test-dns          [+] DNS работает?
 
 2. Тестирование (неограниченно):
-   letsencrypt-regru --staging           ✓ Полный процесс SSL
+   letsencrypt-regru --staging           [+] Полный процесс SSL
 
 3. Production:
-   letsencrypt-regru --obtain            ✓ Боевой сертификат
+   letsencrypt-regru --obtain            [+] Боевой сертификат
 
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 СРАВНЕНИЕ РЕЖИМОВ ТЕСТИРОВАНИЯ
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 
-  --staging         Полный Let's Encrypt, БЕЗ лимитов, ~2-3 мин, тестирует всё
+  --staging         Полный Let's Encrypt, БЕЗ лимитов, ~2-3 мин, тестирует все
   --test-cert       Самоподпись, мгновенно, БЕЗ интернета, для локальной разработки
   --test-dns        Только DNS, ~1-2 мин, не создает сертификат
 
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ
-════════════════════════════════════════════════════════════════════════════════
+================================================================================
 
 Документация:  https://github.com/DFofanov/configure_nginx_manager
 Поддержка:     https://github.com/DFofanov/configure_nginx_manager/issues
@@ -2006,14 +2096,30 @@ def main():
     logger.info("СКРИПТ УПРАВЛЕНИЯ SSL СЕРТИФИКАТАМИ LET'S ENCRYPT")
     logger.info("=" * 60)
     
+    # Получаем текущий IP
+    try:
+        ip_response = requests.get("https://api.ipify.org", timeout=5)
+        current_ip = ip_response.text
+        logger.info(f"Текущий IP адрес: {current_ip}")
+    except:
+        logger.warning("Не удалось определить IP адрес")
+    
     # Проверка доступности API reg.ru (кроме режимов только проверки)
     if not args.check:
+        logger.info("Проверка доступности API reg.ru...")
         if not api.test_api_access():
             logger.error("=" * 80)
             logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: API reg.ru недоступен")
             logger.error("=" * 80)
             logger.error("Скрипт не может продолжить работу без доступа к API")
-            logger.error("Исправьте проблему и запустите скрипт заново")
+            logger.error("")
+            logger.error("Возможные причины:")
+            logger.error("  1. Неверные учётные данные reg.ru")
+            logger.error("  2. IP адрес не добавлен в белый список API")
+            logger.error("  3. Проблемы с интернет-соединением")
+            logger.error("")
+            logger.error("Проверьте настройки и запустите скрипт заново")
+            logger.error("Для диагностики используйте: letsencrypt-regru --test-api -v")
             return 1
         logger.info("")
     
