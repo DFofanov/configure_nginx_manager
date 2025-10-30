@@ -48,15 +48,39 @@ sudo make renew
 
 ## 📋 Main Commands
 
-| Command | Description | Limits |
-|---------|-------------|--------|
-| `make test-cert` | Test certificate | ✅ None |
-| `make obtain` | New Let's Encrypt | ⚠️ 5/week |
-| `make renew` | Renew existing | ⚠️ 5/week |
-| `make run` | Auto mode | ⚠️ 5/week |
+### letsencrypt-regru Commands
+
+| Command | Description | Limits | Use Case |
+|---------|-------------|--------|----------|
+| `--check` | Check certificate expiration | - | Monitoring |
+| `--obtain` | Obtain new certificate | ⚠️ 5/week | Initial creation |
+| `--renew` | Renew existing certificate | ⚠️ 5/week | Renewal |
+| `--auto` | Auto-check and renewal | ⚠️ 5/week | Cron/systemd |
+| `--test-cert` | Test certificate | ✅ None | Development |
+| `--test-api` | Check API reg.ru access | - | Diagnostics |
+| `--test-dns` | Test DNS record creation | - | Pre-SSL check |
+| `--help` | Show help | - | Help |
+| `-v` | Verbose output | - | Debugging |
+
+### Makefile Commands
+
+| Command | Description | Equivalent |
+|---------|-------------|------------|
+| `make test-cert` | Test certificate | `letsencrypt-regru --test-cert` |
+| `make obtain` | New Let's Encrypt | `letsencrypt-regru --obtain` |
+| `make renew` | Renew existing | `letsencrypt-regru --renew` |
+| `make run` | Auto mode | `letsencrypt-regru --auto` |
 | `make status` | System status | - |
-| `make logs` | Show logs | - |
+| `make logs` | Show logs | `journalctl -u letsencrypt-regru` |
 | `make check-config` | Check configuration | - |
+
+### letsencrypt_regru.sh Commands
+
+| Command | Description |
+|---------|-------------|
+| `sudo bash letsencrypt_regru.sh install` | Install application |
+| `sudo bash letsencrypt_regru.sh update` | Update application |
+| `sudo bash letsencrypt_regru.sh uninstall` | Uninstall application |
 
 ---
 

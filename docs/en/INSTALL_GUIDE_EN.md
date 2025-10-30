@@ -100,7 +100,9 @@ During installation, the script will ask for:
 
 ## Using letsencrypt-regru Command
 
-After installation, a convenient command is available:
+After installation, a convenient global command with multiple functions is available:
+
+### 🔧 Main Commands
 
 ```bash
 # Check current certificate expiration
@@ -117,10 +119,58 @@ letsencrypt-regru --auto
 
 # Create test self-signed certificate
 letsencrypt-regru --test-cert
-
-# Show help
-letsencrypt-regru --help
 ```
+
+### 🧪 Diagnostic and Testing Commands
+
+```bash
+# Check API access to reg.ru
+# - Shows current IP address
+# - Tests API connection
+# - Displays account balance
+letsencrypt-regru --test-api
+
+# Test DNS TXT record creation
+# - Full SSL certification process simulation
+# - Creates temporary _acme-challenge TXT record
+# - Waits for DNS propagation (60 seconds)
+# - Verifies via public DNS servers
+# - Automatically removes test record
+letsencrypt-regru --test-dns
+
+# Show help for all commands
+letsencrypt-regru --help
+
+# Enable verbose output
+letsencrypt-regru --obtain -v
+letsencrypt-regru --check -v
+```
+
+### ⚙️ Service Commands (internal use)
+
+```bash
+# Certbot authentication hook (used by certbot automatically)
+letsencrypt-regru --auth-hook
+
+# Certbot cleanup hook (used by certbot automatically)
+letsencrypt-regru --cleanup-hook
+```
+
+### 📋 Command Reference
+
+| Command | Description | Use Case |
+|---------|-------------|----------|
+| `--check` | Check certificate expiration | Regular monitoring |
+| `--obtain` | Obtain new certificate from Let's Encrypt | Initial creation |
+| `--renew` | Renew existing certificate | Renewal |
+| `--auto` | Automatic check and renewal | For cron/systemd |
+| `--test-cert` | Create test self-signed certificate | Development/testing |
+| `--test-api` | Check API access to reg.ru | Connection diagnostics |
+| `--test-dns` | Test DNS record creation | Pre-SSL verification |
+| `--auth-hook` | Certbot hook (DNS creation) | Internal |
+| `--cleanup-hook` | Certbot hook (DNS deletion) | Internal |
+| `--help` | Show help | Help |
+| `-v` | Verbose output | Debugging |
 
 ## Automatic Renewal
 
