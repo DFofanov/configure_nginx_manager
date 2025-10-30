@@ -1099,13 +1099,30 @@ class LetsEncryptManager:
         for d in domains:
             domain_args.extend(["-d", d])
         
+        # Создаём временные wrapper скрипты для hooks
+        import tempfile
+        
+        # Auth hook wrapper
+        auth_hook_script = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
+        auth_hook_script.write('#!/bin/bash\n')
+        auth_hook_script.write(f'{sys.executable} {os.path.abspath(__file__)} --auth-hook\n')
+        auth_hook_script.close()
+        os.chmod(auth_hook_script.name, 0o755)
+        
+        # Cleanup hook wrapper
+        cleanup_hook_script = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
+        cleanup_hook_script.write('#!/bin/bash\n')
+        cleanup_hook_script.write(f'{sys.executable} {os.path.abspath(__file__)} --cleanup-hook\n')
+        cleanup_hook_script.close()
+        os.chmod(cleanup_hook_script.name, 0o755)
+        
         # Команда certbot
         cmd = [
             "certbot", "certonly",
             "--manual",
             "--preferred-challenges", "dns",
-            "--manual-auth-hook", f"{sys.executable} {os.path.abspath(__file__)} --auth-hook",
-            "--manual-cleanup-hook", f"{sys.executable} {os.path.abspath(__file__)} --cleanup-hook",
+            "--manual-auth-hook", auth_hook_script.name,
+            "--manual-cleanup-hook", cleanup_hook_script.name,
             "--email", self.email,
             "--agree-tos",
             "--non-interactive",
@@ -1138,6 +1155,13 @@ class LetsEncryptManager:
             self.logger.error(f"Ошибка при получении сертификата: {e}")
             self.logger.error(e.stderr)
             return False
+        finally:
+            # Удаляем временные wrapper скрипты
+            try:
+                os.unlink(auth_hook_script.name)
+                os.unlink(cleanup_hook_script.name)
+            except:
+                pass
     
     def renew_certificate(self) -> bool:
         """
